@@ -1,3 +1,5 @@
+#O#
+
 import torch
 import torch.nn as nn
 import torch.nn.utils.weight_norm as wn
@@ -8,6 +10,8 @@ from .core import amp_to_impulse_response, fft_convolve, get_beta_kl_cyclic_anne
 from .pqmf import CachedPQMF as PQMF
 from sklearn.decomposition import PCA
 from einops import rearrange
+
+from .excitation import ExcitationModule, get_pitch, get_rms_val, upsample
 
 from time import time
 
@@ -138,6 +142,71 @@ class UpsampleLayer(nn.Module):
 
     def forward(self, x):
         return self.net(x)
+    
+    
+class DownsampleLayer(nn.Module):
+    def __init__(self,
+                 in_dim,
+                 out_dim,
+                 ratio,
+                 padding_mode,
+                 cumulative_delay=0,
+                 bias=False):
+        super().__init__()
+        net = []
+        if ratio > 1:
+            net.append(
+                wn(
+                    cc.Conv1d(
+                        in_dim,
+                        out_dim,
+                        kernel_size=3,
+                        stride=ratio,
+                        padding=cc.get_padding(3, mode=padding_mode),
+                        bias=bias,
+                    )))
+        else:
+            net.append(
+                wn(
+                    cc.Conv1d(
+                        in_dim,
+                        out_dim,
+                        3,
+                        padding=cc.get_padding(3, mode=padding_mode),
+                        bias=bias,
+                    )))
+        
+
+        self.net = cc.CachedSequential(*net)
+        self.cumulative_delay = self.net.cumulative_delay + cumulative_delay * ratio
+
+    def forward(self, x):
+        return self.net(x)
+    
+
+class FiLM(nn.Module):
+    def __init__(
+        self,
+        cond_dim,  # dim of conditioning input
+        batch_norm=True,
+    ):
+        super().__init__()
+        self.batch_norm = batch_norm
+        if batch_norm:
+            self.bn = torch.nn.BatchNorm1d(cond_dim // 2, affine=False)
+
+    def forward(self, x, cond):
+       
+        device = x.device
+        self.bn.to(x.device)
+
+        g, b = torch.chunk(cond, 2, dim=1)
+
+        if self.batch_norm:
+            x = self.bn(x)  # apply BatchNorm without affine
+        x = (x * g) + b  # then apply conditional affine
+
+        return x
 
 
 class NoiseGenerator(nn.Module):
@@ -188,46 +257,108 @@ class Generator(nn.Module):
                  latent_size,
                  capacity,
                  data_size,
-                 ratios,
+                 ratios_up,
+                 ratios_down,
                  loud_stride,
                  use_noise,
                  noise_ratios,
                  noise_bands,
                  padding_mode,
                  bias=False):
+        
         super().__init__()
-        net = [
-            wn(
-                cc.Conv1d(
+        
+        # UPSAMPLER
+        upsample_net = [wn(cc.Conv1d(
                     latent_size,
-                    2**len(ratios) * capacity,
+                    2**len(ratios_up) * capacity,
                     7,
                     padding=cc.get_padding(7, mode=padding_mode),
                     bias=bias,
-                ))
-        ]
+                ))]
 
-        for i, r in enumerate(ratios):
-            in_dim = 2**(len(ratios) - i) * capacity
-            out_dim = 2**(len(ratios) - i - 1) * capacity
+        for i, r in enumerate(ratios_up):
+            in_dim = 2**(len(ratios_up) - i) * capacity
+            out_dim = 2**(len(ratios_up) - i - 1) * capacity
 
-            net.append(
+            upsample_net.append(
                 UpsampleLayer(
                     in_dim,
                     out_dim,
                     r,
                     padding_mode,
-                    cumulative_delay=net[-1].cumulative_delay,
+                    cumulative_delay=upsample_net[-1].cumulative_delay,
                 ))
-            net.append(
+            upsample_net.append(
                 ResidualStack(
                     out_dim,
                     3,
                     padding_mode,
-                    cumulative_delay=net[-1].cumulative_delay,
+                    cumulative_delay=upsample_net[-1].cumulative_delay,
                 ))
 
-        self.net = cc.CachedSequential(*net)
+        # DOWNSAMPLER
+        downsample_net = []
+        for i, r in enumerate(ratios_down):
+            in_dim = 16
+            out_dim_d = 16
+
+            if i == 0:
+                downsample_net.append(
+                    DownsampleLayer(
+                        in_dim,
+                        out_dim_d,
+                        r,
+                        padding_mode,
+                        cumulative_delay=0
+                    ))
+            else:
+                downsample_net.append(
+                    DownsampleLayer(
+                        in_dim,
+                        out_dim_d,
+                        r,
+                        padding_mode,
+                        cumulative_delay=downsample_net[-1].cumulative_delay,
+                    ))
+            
+        downsample_conv = []
+        for i, r in enumerate(ratios_down):
+            if i == 0:
+                downsample_conv.append(wn(
+                                    cc.Conv1d(
+                                        16,
+                                        (2**(i) * capacity) * 2,
+                                        1,
+                                        padding=cc.get_padding(1, mode=padding_mode),
+                                        cumulative_delay=0,
+                                        bias=bias,
+                                    )))
+            else:
+                downsample_conv.append(wn(
+                                    cc.Conv1d(
+                                        16,
+                                        (2**(i) * capacity) * 2,
+                                        1,
+                                        padding=cc.get_padding(1, mode=padding_mode),
+                                        cumulative_delay=downsample_conv[-1].cumulative_delay,
+                                        bias=bias,
+                                    )))
+                
+        self.upsampler = cc.CachedSequential(*upsample_net)
+        self.downsampler = cc.CachedSequential(*downsample_net)
+        self.downsampler_conv = cc.CachedSequential(*downsample_conv)
+        
+        # -----------------------------------------------
+        
+        film_net = []
+        film_net.append(FiLM(1024))
+        film_net.append(FiLM(512))
+        film_net.append(FiLM(256))
+        film_net.append(FiLM(128))
+        self.film_conditioning = film_net
+        
+        # -----------------------------------------------
 
         wave_gen = wn(
             cc.Conv1d(
@@ -264,15 +395,27 @@ class Generator(nn.Module):
 
         self.synth = cc.AlignBranches(
             *branches,
-            cumulative_delay=self.net.cumulative_delay,
+            cumulative_delay=self.upsampler.cumulative_delay,
         )
 
         self.use_noise = use_noise
         self.loud_stride = loud_stride
         self.cumulative_delay = self.synth.cumulative_delay
 
-    def forward(self, x, add_noise: bool = True):
-        x = self.net(x)
+    def forward(self, x, ex, add_noise: bool = True):
+        downsampled_layers = []
+        for down_layer, conv_layer in zip(self.downsampler, self.downsampler_conv):
+            ex = down_layer(ex)
+            downsampled_layers.append(conv_layer(ex))
+
+        for i, up_layer in enumerate(self.upsampler):
+            if i % 2 != 0 or i == 0:
+                x = up_layer(x)
+            else:
+                x = up_layer(x)
+                x = self.film_conditioning[i//2-1](x, downsampled_layers[len(downsampled_layers) - (i//2)])
+                
+        # -----------------------------------------------
 
         if self.use_noise:
             waveform, loudness, noise = self.synth(x)
@@ -408,7 +551,8 @@ class RAVE(pl.LightningModule):
                  data_size,
                  capacity,
                  latent_size,
-                 ratios,
+                 ratios_up,
+                 ratios_down,
                  bias,
                  loud_stride,
                  use_noise,
@@ -419,6 +563,7 @@ class RAVE(pl.LightningModule):
                  d_n_layers,
                  warmup,
                  mode,
+                 block_size,
                  no_latency=False,
                  min_kl=1e-4,
                  max_kl=5e-1,
@@ -441,7 +586,7 @@ class RAVE(pl.LightningModule):
             data_size,
             capacity,
             encoder_out_size,
-            ratios,
+            ratios_up,
             "causal" if no_latency else "centered",
             bias,
         )
@@ -449,7 +594,8 @@ class RAVE(pl.LightningModule):
             latent_size,
             capacity,
             data_size,
-            ratios,
+            ratios_up,
+            ratios_down,
             loud_stride,
             use_noise,
             noise_ratios,
@@ -480,6 +626,7 @@ class RAVE(pl.LightningModule):
         self.warmed_up = False
         self.sr = sr
         self.mode = mode
+        self.block_size = block_size
 
         self.min_kl = min_kl
         self.max_kl = max_kl
@@ -488,6 +635,8 @@ class RAVE(pl.LightningModule):
         self.feature_match = feature_match
 
         self.register_buffer("saved_step", torch.tensor(0))
+        
+        self.excitation_module = ExcitationModule(self.sr, self.block_size)
 
     def configure_optimizers(self):
         gen_p = list(self.encoder.parameters())
@@ -555,12 +704,22 @@ class RAVE(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         p = Profiler()
         self.saved_step += 1
-
+        
+        #in_batch = batch
         gen_opt, dis_opt = self.optimizers()
+        
+        # GENERATE HARMONIC EXCITATION SIGNAL
+        pitch = get_pitch(batch, self.block_size).unsqueeze(-1)
+        pitch = upsample(pitch, self.block_size)
+        excitation, phase = self.excitation_module(pitch)
+        rms_val = get_rms_val(batch, excitation, self.block_size)
+        excitation = (excitation * rms_val).unsqueeze(1)
+        
         x = batch.unsqueeze(1)
 
         if self.pqmf is not None:  # MULTIBAND DECOMPOSITION
             x = self.pqmf(x)
+            excitation = self.pqmf(excitation)
             p.tick("pqmf")
 
         if self.warmed_up:  # EVAL ENCODER
@@ -573,9 +732,9 @@ class RAVE(pl.LightningModule):
         if self.warmed_up:  # FREEZE ENCODER
             z = z.detach()
             kl = kl.detach()
-
+        
         # DECODE LATENT
-        y = self.decoder(z, add_noise=self.warmed_up)
+        y = self.decoder(z, excitation, add_noise=self.warmed_up)
         p.tick("decode")
 
         # DISTANCE BETWEEN INPUT AND OUTPUT
@@ -684,28 +843,38 @@ class RAVE(pl.LightningModule):
         return y
 
     def validation_step(self, batch, batch_idx):
+        
+        # GENERATE HARMONIC EXCITATION SIGNAL
+        pitch = get_pitch(batch, self.block_size).unsqueeze(-1)
+        pitch = upsample(pitch, self.block_size)
+        excitation, phase = self.excitation_module(pitch)
+        rms_val = get_rms_val(batch, excitation, self.block_size)
+        excitation = (excitation * rms_val).unsqueeze(1)
+        
         x = batch.unsqueeze(1)
 
         if self.pqmf is not None:
             x = self.pqmf(x)
+            excitation = self.pqmf(excitation)
 
         mean, scale = self.encoder(x)
         z, _ = self.reparametrize(mean, scale)
-        y = self.decoder(z, add_noise=self.warmed_up)
+        y = self.decoder(z, excitation, add_noise=self.warmed_up)
 
         if self.pqmf is not None:
             x = self.pqmf.inverse(x)
             y = self.pqmf.inverse(y)
-
+            excitation = self.pqmf.inverse(excitation)
+        
         distance = self.distance(x, y)
 
         if self.trainer is not None:
             self.log("validation", distance)
 
-        return torch.cat([x, y], -1), mean
+        return torch.cat([x, y], -1), mean, torch.cat([x, excitation], -1)
 
     def validation_epoch_end(self, out):
-        audio, z = list(zip(*out))
+        audio, z, excitation = list(zip(*out))
 
         if self.saved_step > self.warmup:
             self.warmed_up = True
@@ -737,4 +906,9 @@ class RAVE(pl.LightningModule):
         y = torch.cat(audio, 0)[:64].reshape(-1)
         self.logger.experiment.add_audio("audio_val", y,
                                          self.saved_step.item(), self.sr)
+        
+        y_ex = torch.cat(excitation, 0)[:64].reshape(-1)
+        self.logger.experiment.add_audio("audio_ex", y_ex,
+                                         self.saved_step.item(), self.sr)
+        
         self.idx += 1

@@ -1,3 +1,4 @@
+#O#
 import torch
 from torch.utils.data import DataLoader, random_split
 
@@ -31,6 +32,7 @@ if __name__ == "__main__":
             small=[4, 4, 4, 2],
             large=[4, 4, 2, 2, 2],
         )
+        RATIOS_DOWN = [1, 2, 4, 4]
 
         MIN_KL = 1e-1
         MAX_KL = 1e-1
@@ -57,6 +59,7 @@ if __name__ == "__main__":
         N_SIGNAL = 65536
         MAX_STEPS = setting(default=3000000, small=3000000, large=6000000)
         VAL_EVERY = 10000
+        BLOCK_SIZE = 128
 
         BATCH = 8
 
@@ -69,7 +72,8 @@ if __name__ == "__main__":
         data_size=args.DATA_SIZE,
         capacity=args.CAPACITY,
         latent_size=args.LATENT_SIZE,
-        ratios=args.RATIOS,
+        ratios_up=args.RATIOS,
+        ratios_down=args.RATIOS_DOWN,
         bias=args.BIAS,
         loud_stride=args.LOUD_STRIDE,
         use_noise=args.USE_NOISE,
@@ -80,6 +84,7 @@ if __name__ == "__main__":
         d_n_layers=args.D_N_LAYERS,
         warmup=args.WARMUP,
         mode=args.MODE,
+        block_size=args.BLOCK_SIZE,
         no_latency=args.NO_LATENCY,
         sr=args.SR,
         min_kl=args.MIN_KL,
