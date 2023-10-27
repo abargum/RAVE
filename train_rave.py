@@ -49,7 +49,7 @@ if __name__ == "__main__":
         D_MULTIPLIER = 4
         D_N_LAYERS = 4
 
-        WARMUP = setting(default=1000000, small=1000000, large=3000000)
+        WARMUP = setting(default=150000, small=1000000, large=3000000)
         MODE = "hinge"
         CKPT = None
 

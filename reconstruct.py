@@ -49,7 +49,7 @@ rave = RAVE.load_from_checkpoint(
 
 # COMPUTE LATENT COMPRESSION RATIO
 x = torch.randn(1, 1, 2**14).to(device)
-z = rave.encode(x)
+z, ex = rave.encode(x)
 ratio = x.shape[-1] // z.shape[-1]
 
 # SEARCH FOR WAV FILES
@@ -71,7 +71,8 @@ for audio in audios:
     x = torch.nn.functional.pad(x, (0, pad))
 
     # ENCODE / DECODE
-    y = rave.decode(rave.encode(x))
+    z, ex = rave.encode(x)
+    y = rave.decode(z, ex)
     y = y.reshape(-1).cpu().numpy()[:n_sample]
 
     # WRITE AUDIO

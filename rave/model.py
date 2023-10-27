@@ -724,7 +724,8 @@ class RAVE(pl.LightningModule):
 
         if self.warmed_up:  # EVAL ENCODER
             self.encoder.eval()
-
+        
+        print(x.shape)
         # ENCODE INPUT
         z, kl = self.reparametrize(*self.encoder(x))
         p.tick("encode")
@@ -733,6 +734,7 @@ class RAVE(pl.LightningModule):
             z = z.detach()
             kl = kl.detach()
         
+        print(excitation.shape)
         # DECODE LATENT
         y = self.decoder(z, excitation, add_noise=self.warmed_up)
         p.tick("decode")
@@ -829,15 +831,24 @@ class RAVE(pl.LightningModule):
         # print(p)
 
     def encode(self, x):
+        
+        #create excitation signal
+        pitch = get_pitch(x.squeeze(1), self.block_size).unsqueeze(-1)
+        pitch = upsample(pitch, self.block_size)
+        excitation, phase = self.excitation_module(pitch)
+        rms_val = get_rms_val(x.squeeze(1), excitation, self.block_size)
+        excitation = (excitation * rms_val).unsqueeze(1)
+        
         if self.pqmf is not None:
             x = self.pqmf(x)
+            ex = self.pqmf(excitation)
 
         mean, scale = self.encoder(x)
         z, _ = self.reparametrize(mean, scale)
-        return z
+        return z, ex
 
-    def decode(self, z):
-        y = self.decoder(z, add_noise=True)
+    def decode(self, z, ex):
+        y = self.decoder(z, ex, add_noise=True)
         if self.pqmf is not None:
             y = self.pqmf.inverse(y)
         return y
@@ -868,8 +879,8 @@ class RAVE(pl.LightningModule):
         
         distance = self.distance(x, y)
 
-        if self.trainer is not None:
-            self.log("validation", distance)
+        #if self.trainer is not None:
+        self.log("validation", distance)
 
         return torch.cat([x, y], -1), mean, torch.cat([x, excitation], -1)
 
