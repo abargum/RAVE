@@ -88,7 +88,7 @@ if __name__ == "__main__":
         feature_match=args.FEATURE_MATCH,
     )
 
-    x = torch.zeros(args.BATCH, 2**14)
+    x = torch.zeros(args.BATCH, 2**16)
     model.validation_step(x, 0)
 
     preprocess = lambda name: simple_audio_preprocess(
@@ -121,9 +121,12 @@ if __name__ == "__main__":
         generator=torch.Generator().manual_seed(42),
     )
 
-
-    num_workers = 0 if os.name == "nt" else 8
-    train = DataLoader(train, args.BATCH, True, drop_last=True, num_workers=num_workers)
+    num_workers = 0 if os.name == "nt" else 0
+    train = DataLoader(train,
+                       args.BATCH,
+                       True,
+                       drop_last=True,
+                       num_workers=num_workers)
     val = DataLoader(val, args.BATCH, False, num_workers=num_workers)
 
     # CHECKPOINT CALLBACKS

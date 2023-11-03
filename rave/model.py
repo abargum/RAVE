@@ -9,9 +9,16 @@ from .pqmf import CachedPQMF as PQMF
 from sklearn.decomposition import PCA
 from einops import rearrange
 
+from torch.nn import Conv1d, ConvTranspose1d, AvgPool1d, Conv2d
+from torch.nn.utils import weight_norm, remove_weight_norm, spectral_norm
+import torch.nn.functional as F
+
 from time import time
 
 import cached_conv as cc
+
+from .perturbation import perturb
+import torchyin
 
 
 class Profiler:
@@ -45,6 +52,112 @@ class Residual(nn.Module):
     def forward(self, x):
         x_net, x_res = self.aligned(x)
         return x_net + x_res
+
+
+# ------------------------------------
+# MRF FOR ENCODER
+# ------------------------------------
+
+
+def init_weights(m, mean=0.0, std=0.01):
+    classname = m.__class__.__name__
+    if classname.find("Conv") != -1:
+        m.weight.data.normal_(mean, std)
+
+
+class MultiReceptiveFieldFusion(torch.nn.Module):
+    def __init__(self,
+                 channels,
+                 padding_mode,
+                 cumulative_delay=0,
+                 kernel_size=3,
+                 dilation=(1, 3, 5)):
+        super(MultiReceptiveFieldFusion, self).__init__()
+
+        net = []
+        res_cum_delay = 0
+
+        seq = []
+        seq.append(nn.LeakyReLU(.1))
+        seq.append(
+            wn(
+                cc.Conv1d(channels,
+                          channels,
+                          kernel_size,
+                          1,
+                          dilation=dilation[0],
+                          padding=cc.get_padding(kernel_size=kernel_size,
+                                                 dilation=dilation[0],
+                                                 mode=padding_mode))))
+        seq.append(
+            wn(
+                cc.Conv1d(channels,
+                          channels,
+                          kernel_size,
+                          1,
+                          dilation=dilation[1],
+                          padding=cc.get_padding(kernel_size=kernel_size,
+                                                 dilation=dilation[1],
+                                                 mode=padding_mode))))
+        seq.append(
+            wn(
+                cc.Conv1d(channels,
+                          channels,
+                          kernel_size,
+                          1,
+                          dilation=dilation[2],
+                          padding=cc.get_padding(kernel_size=kernel_size,
+                                                 dilation=dilation[2],
+                                                 mode=padding_mode))))
+
+        seq.append(nn.LeakyReLU(.1))
+        seq.append(
+            wn(
+                cc.Conv1d(channels,
+                          channels,
+                          kernel_size,
+                          1,
+                          dilation=1,
+                          padding=cc.get_padding(kernel_size=kernel_size,
+                                                 dilation=1,
+                                                 mode=padding_mode))))
+        seq.append(
+            wn(
+                cc.Conv1d(channels,
+                          channels,
+                          kernel_size,
+                          1,
+                          dilation=1,
+                          padding=cc.get_padding(kernel_size=kernel_size,
+                                                 dilation=1,
+                                                 mode=padding_mode))))
+        seq.append(
+            wn(
+                cc.Conv1d(channels,
+                          channels,
+                          kernel_size,
+                          1,
+                          dilation=1,
+                          padding=cc.get_padding(kernel_size=kernel_size,
+                                                 dilation=1,
+                                                 mode=padding_mode))))
+
+        res_net = cc.CachedSequential(*seq)
+
+        net.append(Residual(res_net, cumulative_delay=res_cum_delay))
+        res_cum_delay = net[-1].cumulative_delay
+
+        self.net = cc.CachedSequential(*net)
+        self.net.apply(init_weights)
+        self.cumulative_delay = self.net.cumulative_delay + cumulative_delay
+
+    def forward(self, x):
+        return self.net(x)
+
+
+# ------------------------------------
+# RESIDUAL STACK FOR DECODER
+# ------------------------------------
 
 
 class ResidualStack(nn.Module):
@@ -325,6 +438,10 @@ class Encoder(nn.Module):
                     cumulative_delay=net[-3].cumulative_delay,
                 ))
 
+            # OBS! The single MRF module has a static kernel size of 3,
+            # in HiFiGAN it goes [3, 7, 11] e.g. each layer has 3 MRFs
+            net.append(MultiReceptiveFieldFusion(out_dim, padding_mode))
+
         net.append(nn.LeakyReLU(.2))
         net.append(
             cc.Conv1d(
@@ -403,6 +520,52 @@ class StackDiscriminators(nn.Module):
         return features
 
 
+class PitchEncoder(nn.Module):
+    def __init__(self, in_size, output_size, kernel_size, padding_mode):
+        super().__init__()
+
+        net = []
+        net.append(
+            wn(
+                cc.Conv1d(in_size,
+                          output_size,
+                          kernel_size,
+                          padding=cc.get_padding(kernel_size,
+                                                 mode=padding_mode))))
+
+        net.append(
+            wn(
+                cc.Conv1d(output_size,
+                          output_size,
+                          kernel_size,
+                          padding=cc.get_padding(kernel_size,
+                                                 mode=padding_mode))))
+        net.append(nn.LeakyReLU(.1))
+
+        net.append(
+            wn(
+                cc.Conv1d(output_size,
+                          output_size,
+                          kernel_size,
+                          padding=cc.get_padding(kernel_size,
+                                                 mode=padding_mode))))
+        net.append(nn.LeakyReLU(.1))
+
+        net.append(
+            wn(
+                cc.Conv1d(output_size,
+                          output_size,
+                          kernel_size,
+                          padding=cc.get_padding(kernel_size,
+                                                 mode=padding_mode))))
+        net.append(nn.LeakyReLU(.1))
+
+        self.net = cc.CachedSequential(*net)
+
+    def forward(self, x):
+        return self.net(x)
+
+
 class RAVE(pl.LightningModule):
     def __init__(self,
                  data_size,
@@ -445,8 +608,10 @@ class RAVE(pl.LightningModule):
             "causal" if no_latency else "centered",
             bias,
         )
+
+        new_latent_size = latent_size + 256  #pitch dim
         self.decoder = Generator(
-            latent_size,
+            new_latent_size,
             capacity,
             data_size,
             ratios,
@@ -465,6 +630,12 @@ class RAVE(pl.LightningModule):
             multiplier=d_multiplier,
             n_layers=d_n_layers,
         )
+
+        self.pitch_encoder = PitchEncoder(
+            1,
+            32,
+            kernel_size=3,
+            padding_mode="causal" if no_latency else "centered")
 
         self.idx = 0
 
@@ -552,12 +723,29 @@ class RAVE(pl.LightningModule):
             raise NotImplementedError
         return loss_dis, loss_gen
 
+    def get_pitch(self, x, block_size, fs, pitch_min=60):
+        desired_num_frames = x.shape[-1] / block_size
+        tau_max = int(fs / pitch_min)
+        frame_length = 2 * tau_max
+        frame_stride = (x.shape[-1] - frame_length) / (desired_num_frames -
+                                                       1) / fs
+        return torchyin.estimate(x,
+                                 sample_rate=fs,
+                                 pitch_min=pitch_min,
+                                 pitch_max=500,
+                                 frame_stride=frame_stride)
+
     def training_step(self, batch, batch_idx):
         p = Profiler()
         self.saved_step += 1
 
         gen_opt, dis_opt = self.optimizers()
-        x = batch.unsqueeze(1)
+
+        x_perturbed = torch.empty(batch.shape)
+        for i, x in enumerate(batch):
+            x_perturbed[i] = perturb(x, self.sr)
+
+        x = x_perturbed.unsqueeze(1)
 
         if self.pqmf is not None:  # MULTIBAND DECOMPOSITION
             x = self.pqmf(x)
@@ -573,6 +761,10 @@ class RAVE(pl.LightningModule):
         if self.warmed_up:  # FREEZE ENCODER
             z = z.detach()
             kl = kl.detach()
+
+        pitch = self.get_pitch(batch, block_size=256, fs=self.sr).unsqueeze(1)
+        pitch = torch.permute(self.pitch_encoder(pitch), (0, 2, 1))
+        z = torch.cat((z, pitch), 1)
 
         # DECODE LATENT
         y = self.decoder(z, add_noise=self.warmed_up)
@@ -691,6 +883,11 @@ class RAVE(pl.LightningModule):
 
         mean, scale = self.encoder(x)
         z, _ = self.reparametrize(mean, scale)
+
+        pitch = self.get_pitch(batch, block_size=256, fs=self.sr).unsqueeze(1)
+        pitch = torch.permute(self.pitch_encoder(pitch), (0, 2, 1))
+        z = torch.cat((z, pitch), 1)
+
         y = self.decoder(z, add_noise=self.warmed_up)
 
         if self.pqmf is not None:
@@ -699,8 +896,8 @@ class RAVE(pl.LightningModule):
 
         distance = self.distance(x, y)
 
-        if self.trainer is not None:
-            self.log("validation", distance)
+        #if self.trainer is not None:
+        self.log("validation", distance)
 
         return torch.cat([x, y], -1), mean
 
