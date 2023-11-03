@@ -741,11 +741,13 @@ class RAVE(pl.LightningModule):
 
         gen_opt, dis_opt = self.optimizers()
 
-        x_perturbed = torch.empty(batch.shape)
-        for i, x in enumerate(batch):
-            x_perturbed[i] = perturb(x, self.sr)
+        x_perturbed = torch.empty(batch.shape).to(batch)
+        for i, instance in enumerate(batch):
+            print(instance.shape)
+            x_perturbed[i] = perturb(instance, self.sr)
 
         x = x_perturbed.unsqueeze(1)
+        print(x.shape)
 
         if self.pqmf is not None:  # MULTIBAND DECOMPOSITION
             x = self.pqmf(x)

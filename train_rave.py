@@ -121,7 +121,7 @@ if __name__ == "__main__":
         generator=torch.Generator().manual_seed(42),
     )
 
-    num_workers = 0 if os.name == "nt" else 0
+    num_workers = 0 if os.name == "nt" else 10
     train = DataLoader(train,
                        args.BATCH,
                        True,
