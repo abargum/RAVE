@@ -14,6 +14,8 @@ PRAAT_CHANGEGENDER_PITCHSHIFTRATIO_DEFAULT = 1.0
 PRAAT_CHANGEGENDER_PITCHRANGERATIO_DEFAULT = 1.0
 PRAAT_CHANGEGENDER_DURATIONFACTOR_DEFAULT = 1.0
 
+from .signal import approx_iir_filter_cascade
+
 # --------------------------------
 # UTILS
 # --------------------------------
@@ -291,7 +293,15 @@ def apply_iir_filter(wav: torch.Tensor,
     else:
         raise NotImplementedError
     if torch_backend:
-        return_wav = AF.biquad(wav, b0, b1, b2, a0, a1, a2)
+        #return_wav = AF.biquad(wav, b0, b1, b2, a0, a1, a2)
+        return_wav = approx_iir_filter_cascade(
+            b_s=[torch.tensor([b0]),
+                 torch.tensor([b1]),
+                 torch.tensor([b2])],
+            a_s=[torch.tensor([a0]),
+                 torch.tensor([a1]),
+                 torch.tensor([a2])],
+            x=wav)
     else:
         # https://docs.scipy.org/doc/scipy/reference/generated/scipy.signal.lfilter_zi.html
         wav_numpy = wav.detach().cpu().numpy()
