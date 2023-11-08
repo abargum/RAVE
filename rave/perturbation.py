@@ -322,11 +322,9 @@ def perturb(wav: torch.Tensor, sr: int) -> torch.Tensor:
     r"""sequentially apply peq, pr and fs"""
 
     wav = parametric_equalizer(wav, sr)
-    print("PEQ", wav.shape)
     wav_numpy = wav.detach().cpu().numpy()
     sound = wav_to_Sound(wav_numpy, sampling_frequency=sr)
     sound = formant_and_pitch_shift(sound)
 
     wav = torch.from_numpy(sound.values).float().squeeze(0)
-    print("WAV", wav.shape)
     return wav
