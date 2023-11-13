@@ -32,7 +32,9 @@ def wav_to_Sound(wav, sampling_frequency: int = 48000) -> parselmouth.Sound:
     if isinstance(wav, parselmouth.Sound):
         sound = wav
     elif isinstance(wav, np.ndarray):
-        sound = parselmouth.Sound(wav, sampling_frequency=sampling_frequency)
+        sound = parselmouth.Sound(wav,
+                                  sampling_frequency=sampling_frequency,
+                                  start_time=0.0)
     elif isinstance(wav, list):
         wav_np = np.asarray(wav)
         sound = parselmouth.Sound(np.asarray(wav_np),

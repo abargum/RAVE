@@ -19,6 +19,8 @@ import numpy as np
 
 import GPUtil as gpu
 
+import wandb
+
 from udls.transforms import Compose, RandomApply, Dequantize, RandomCrop
 
 if __name__ == "__main__":
@@ -36,6 +38,7 @@ if __name__ == "__main__":
             small=[4, 4, 4, 2],
             large=[4, 4, 2, 2, 2],
         )
+        RATIOS_DOWN = [1, 2, 4, 4]
 
         MIN_KL = 1e-1
         MAX_KL = 1e-1
@@ -52,7 +55,7 @@ if __name__ == "__main__":
         D_MULTIPLIER = 4
         D_N_LAYERS = 4
 
-        WARMUP = setting(default=1000000, small=1000000, large=3000000)
+        WARMUP = setting(default=150000, small=1000000, large=3000000)
         MODE = "hinge"
         CKPT = None
 
@@ -61,7 +64,8 @@ if __name__ == "__main__":
         SR = 48000
         N_SIGNAL = 65536
         MAX_STEPS = setting(default=3000000, small=3000000, large=6000000)
-        VAL_EVERY = 10000
+        VAL_EVERY = 10
+        BLOCK_SIZE = 128
 
         BATCH = 8
 
@@ -70,11 +74,19 @@ if __name__ == "__main__":
     args.parse_args()
 
     assert args.NAME is not None
+
+    # -------------------------------
+    # Initialize W and B
+    # -------------------------------
+    wandb.init(project="RAVE", name=f"{args.NAME}")
+    # -------------------------------
+
     model = RAVE(
         data_size=args.DATA_SIZE,
         capacity=args.CAPACITY,
         latent_size=args.LATENT_SIZE,
         ratios=args.RATIOS,
+        ratios_down=args.RATIOS_DOWN,
         bias=args.BIAS,
         loud_stride=args.LOUD_STRIDE,
         use_noise=args.USE_NOISE,
@@ -85,6 +97,7 @@ if __name__ == "__main__":
         d_n_layers=args.D_N_LAYERS,
         warmup=args.WARMUP,
         mode=args.MODE,
+        block_size=args.BLOCK_SIZE,
         no_latency=args.NO_LATENCY,
         sr=args.SR,
         min_kl=args.MIN_KL,
