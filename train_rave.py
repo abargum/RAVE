@@ -5,7 +5,12 @@ from rave.model import RAVE
 from rave.core import random_phase_mangle, EMAModelCheckPoint
 from rave.core import search_for_run
 
-from udls import SimpleDataset, simple_audio_preprocess
+#from udls import SimpleDataset, simple_audio_preprocess
+import sys
+
+sys.path.insert(1, '../udls_extended/')
+
+from udls_extended import SimpleDataset, simple_audio_preprocess
 from effortless_config import Config, setting
 import pytorch_lightning as pl
 from os import environ, path
@@ -88,7 +93,10 @@ if __name__ == "__main__":
         feature_match=args.FEATURE_MATCH,
     )
 
-    x = torch.zeros(args.BATCH, 2**16)
+    x = {
+        'data_clean': torch.zeros(args.BATCH, 2**16),
+        'data_perturbed': torch.zeros(args.BATCH, 2**16)
+    }
     model.validation_step(x, 0)
 
     preprocess = lambda name: simple_audio_preprocess(
@@ -97,6 +105,7 @@ if __name__ == "__main__":
     )(name).astype(np.float16)
 
     dataset = SimpleDataset(
+        args.SR,
         args.PREPROCESSED,
         args.WAV,
         preprocess_function=preprocess,
@@ -121,13 +130,18 @@ if __name__ == "__main__":
         generator=torch.Generator().manual_seed(42),
     )
 
-    num_workers = 0 if os.name == "nt" else 10
+    num_workers = 0 if os.name == "nt" else 0
     train = DataLoader(train,
                        args.BATCH,
                        True,
                        drop_last=True,
                        num_workers=num_workers)
     val = DataLoader(val, args.BATCH, False, num_workers=num_workers)
+
+    example = next(iter(train))
+    clean_example = example['data_clean'][0]
+    perturbed_example = example['data_perturbed'][0]
+    print(clean_example.shape, perturbed_example.shape)
 
     # CHECKPOINT CALLBACKS
     validation_checkpoint = pl.callbacks.ModelCheckpoint(

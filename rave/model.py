@@ -609,7 +609,7 @@ class RAVE(pl.LightningModule):
             bias,
         )
 
-        new_latent_size = latent_size + 256  #pitch dim
+        new_latent_size = latent_size  #+ 256  #pitch dim
         self.decoder = Generator(
             new_latent_size,
             capacity,
@@ -630,12 +630,6 @@ class RAVE(pl.LightningModule):
             multiplier=d_multiplier,
             n_layers=d_n_layers,
         )
-
-        self.pitch_encoder = PitchEncoder(
-            1,
-            32,
-            kernel_size=3,
-            padding_mode="causal" if no_latency else "centered")
 
         self.idx = 0
 
@@ -723,29 +717,18 @@ class RAVE(pl.LightningModule):
             raise NotImplementedError
         return loss_dis, loss_gen
 
-    def get_pitch(self, x, block_size, fs, pitch_min=60):
-        desired_num_frames = x.shape[-1] / block_size
-        tau_max = int(fs / pitch_min)
-        frame_length = 2 * tau_max
-        frame_stride = (x.shape[-1] - frame_length) / (desired_num_frames -
-                                                       1) / fs
-        return torchyin.estimate(x,
-                                 sample_rate=fs,
-                                 pitch_min=pitch_min,
-                                 pitch_max=500,
-                                 frame_stride=frame_stride)
-
     def training_step(self, batch, batch_idx):
         p = Profiler()
         self.saved_step += 1
 
         gen_opt, dis_opt = self.optimizers()
 
-        x_perturbed = torch.empty(batch.shape).to(batch)
-        for i, instance in enumerate(batch):
-            x_perturbed[i] = perturb(instance, self.sr)
+        x = batch['data_clean'].unsqueeze(1)
+        x_perturbed = batch['data_perturbed'].unsqueeze(1)
 
-        x = x_perturbed.unsqueeze(1)
+        print(x.shape, x_perturbed.shape)
+
+        x = x.unsqueeze(1)
 
         if self.pqmf is not None:  # MULTIBAND DECOMPOSITION
             x = self.pqmf(x)
@@ -761,10 +744,6 @@ class RAVE(pl.LightningModule):
         if self.warmed_up:  # FREEZE ENCODER
             z = z.detach()
             kl = kl.detach()
-
-        pitch = self.get_pitch(batch, block_size=256, fs=self.sr).unsqueeze(1)
-        pitch = torch.permute(self.pitch_encoder(pitch), (0, 2, 1))
-        z = torch.cat((z, pitch), 1)
 
         # DECODE LATENT
         y = self.decoder(z, add_noise=self.warmed_up)
@@ -876,7 +855,11 @@ class RAVE(pl.LightningModule):
         return y
 
     def validation_step(self, batch, batch_idx):
-        x = batch.unsqueeze(1)
+
+        x = batch['data_clean'].unsqueeze(1)
+        x_perturbed = batch['data_perturbed'].unsqueeze(1)
+
+        print(x.shape, x_perturbed.shape)
 
         if self.pqmf is not None:
             x = self.pqmf(x)
@@ -884,9 +867,7 @@ class RAVE(pl.LightningModule):
         mean, scale = self.encoder(x)
         z, _ = self.reparametrize(mean, scale)
 
-        pitch = self.get_pitch(batch, block_size=256, fs=self.sr).unsqueeze(1)
-        pitch = torch.permute(self.pitch_encoder(pitch), (0, 2, 1))
-        z = torch.cat((z, pitch), 1)
+        #z = torch.cat((z, pitch), 1)
 
         y = self.decoder(z, add_noise=self.warmed_up)
 
@@ -914,6 +895,8 @@ class RAVE(pl.LightningModule):
 
             self.latent_mean.copy_(z.mean(0))
             z = z - self.latent_mean
+
+            print(z.shape)
 
             pca = PCA(z.shape[-1]).fit(z.cpu().numpy())
 

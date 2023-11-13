@@ -14,8 +14,6 @@ PRAAT_CHANGEGENDER_PITCHSHIFTRATIO_DEFAULT = 1.0
 PRAAT_CHANGEGENDER_PITCHRANGERATIO_DEFAULT = 1.0
 PRAAT_CHANGEGENDER_DURATIONFACTOR_DEFAULT = 1.0
 
-from .signal import approx_iir_filter_cascade
-
 # --------------------------------
 # UTILS
 # --------------------------------
@@ -175,7 +173,7 @@ def formant_and_pitch_shift(sound: parselmouth.Sound) -> parselmouth.Sound:
 # --------------------------------
 
 
-def parametric_equalizer(wav: torch.Tensor, sr: int) -> torch.Tensor:
+def parametric_equalizer(wav, sr: int):
     cutoff_low_freq = 60.
     cutoff_high_freq = 10000.
 
@@ -274,13 +272,13 @@ def peaking_coeffs(dBgain, cutoff_freq, sample_rate, Q):
     return b0, b1, b2, a0, a1, a2
 
 
-def apply_iir_filter(wav: torch.Tensor,
+def apply_iir_filter(wav,
                      ftype,
                      dBgain,
                      cutoff_freq,
                      sample_rate,
                      Q,
-                     torch_backend=True):
+                     torch_backend=False):
     if ftype == 'low':
         b0, b1, b2, a0, a1, a2 = lowShelf_coeffs(dBgain, cutoff_freq,
                                                  sample_rate, Q)
@@ -294,22 +292,14 @@ def apply_iir_filter(wav: torch.Tensor,
         raise NotImplementedError
     if torch_backend:
         return_wav = AF.biquad(wav, b0, b1, b2, a0, a1, a2)
-        # return_wav = approx_iir_filter_cascade(
-        #     b_s=[torch.tensor([b0]),
-        #          torch.tensor([b1]),
-        #          torch.tensor([b2])],
-        #     a_s=[torch.tensor([a0]),
-        #          torch.tensor([a1]),
-        #          torch.tensor([a2])],
-        #     x=wav)
     else:
         # https://docs.scipy.org/doc/scipy/reference/generated/scipy.signal.lfilter_zi.html
-        wav_numpy = wav.detach().cpu().numpy()
+        wav_numpy = wav
         b = np.asarray([b0, b1, b2])
         a = np.asarray([a0, a1, a2])
         zi = scipy.signal.lfilter_zi(b, a) * wav_numpy[0]
         return_wav, _ = scipy.signal.lfilter(b, a, wav_numpy, zi=zi)
-        return_wav = torch.from_numpy(return_wav)
+        #return_wav = torch.from_numpy(return_wav)
     return return_wav
 
 
@@ -318,13 +308,13 @@ def apply_iir_filter(wav: torch.Tensor,
 # --------------------------------
 
 
-def perturb(wav: torch.Tensor, sr: int) -> torch.Tensor:
+def perturb(wav, sr: int):
     r"""sequentially apply peq, pr and fs"""
 
     wav = parametric_equalizer(wav, sr)
-    wav_numpy = wav.detach().cpu().numpy()
+    wav_numpy = wav
     sound = wav_to_Sound(wav_numpy, sampling_frequency=sr)
     sound = formant_and_pitch_shift(sound)
 
-    wav = torch.from_numpy(sound.values).float().squeeze(0)
+    wav = sound.values
     return wav
