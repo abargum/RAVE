@@ -13,6 +13,7 @@ from time import time
 
 import cached_conv as cc
 
+import wandb
 
 class Profiler:
     def __init__(self):
@@ -667,6 +668,13 @@ class RAVE(pl.LightningModule):
         self.log("feature_matching", feature_matching_distance)
         p.tick("log")
 
+        wandb.log({
+            "loss_dis": loss_dis,
+            "loss_gen": loss_gen,
+            "distance": distance,
+            "feature_matching": feature_matching_distance
+        })
+
         # print(p)
 
     def encode(self, x):
@@ -699,8 +707,9 @@ class RAVE(pl.LightningModule):
 
         distance = self.distance(x, y)
 
-        if self.trainer is not None:
-            self.log("validation", distance)
+        #if self.trainer is not None:
+        self.log("validation", distance)
+        wandb.log({"validation": distance})
 
         return torch.cat([x, y], -1), mean
 
@@ -737,4 +746,10 @@ class RAVE(pl.LightningModule):
         y = torch.cat(audio, 0)[:64].reshape(-1)
         self.logger.experiment.add_audio("audio_val", y,
                                          self.saved_step.item(), self.sr)
+
+        wandb.log({
+            f"audio_val_{self.saved_step.item():06d}":
+            wandb.Audio(y.detach().cpu().numpy(), caption="audio", sample_rate=self.sr)
+        })
+
         self.idx += 1

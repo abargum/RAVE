@@ -14,6 +14,8 @@ import numpy as np
 
 import GPUtil as gpu
 
+import wandb
+
 from udls.transforms import Compose, RandomApply, Dequantize, RandomCrop
 
 if __name__ == "__main__":
@@ -63,6 +65,12 @@ if __name__ == "__main__":
         NAME = None
 
     args.parse_args()
+
+    # -------------------------------
+    # Initialize W and B
+    # -------------------------------
+    wandb.init(project="RAVE", name=f"{args.NAME}")
+    # -------------------------------
 
     assert args.NAME is not None
     model = RAVE(
