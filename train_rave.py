@@ -108,7 +108,8 @@ if __name__ == "__main__":
 
     x = {
         'data_clean': torch.zeros(args.BATCH, 2**16),
-        'data_perturbed': torch.zeros(args.BATCH, 2**16)
+        'data_perturbed': torch.zeros(args.BATCH, 2**16),
+        'speaker_emb': torch.zeros(args.BATCH, 512)
     }
     model.validation_step(x, 0)
 
@@ -119,6 +120,8 @@ if __name__ == "__main__":
 
     dataset = SimpleDataset(
         args.SR,
+        "speaker_embedding/resnet34sel_pretrained.pt",
+        torch.device('cpu'),
         args.PREPROCESSED,
         args.WAV,
         preprocess_function=preprocess,
@@ -152,9 +155,12 @@ if __name__ == "__main__":
     val = DataLoader(val, args.BATCH, False, num_workers=num_workers)
 
     example = next(iter(train))
-    clean_example = example['data_clean'][0]
-    perturbed_example = example['data_perturbed'][0]
-    print(clean_example.shape, perturbed_example.shape)
+    clean_example = example['data_clean']
+    perturbed_example = example['data_perturbed']
+    speaker_emb = example['speaker_emb']
+    print("Input Audio Shape:", clean_example.shape,
+          "\nPerturbed Audio Shape:", perturbed_example.shape,
+          "\nSpeaker Embedding Shape:", speaker_emb.shape)
 
     # CHECKPOINT CALLBACKS
     validation_checkpoint = pl.callbacks.ModelCheckpoint(

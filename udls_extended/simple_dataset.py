@@ -9,8 +9,8 @@ from scipy.io.wavfile import read as read_wav_file
 from tqdm import tqdm
 
 from .base_dataset import SimpleLMDBDataset
-
 from .perturbation import perturb
+from .ResNetSE34L import MainModel as ResNetModel
 
 
 def dummy_load(name):
@@ -51,6 +51,8 @@ class SimpleDataset(torch.utils.data.Dataset):
     def __init__(
         self,
         sampling_rate,
+        checkpoint_path,
+        device,
         out_database_location,
         folder_list=None,
         file_list=None,
@@ -68,6 +70,8 @@ class SimpleDataset(torch.utils.data.Dataset):
         makedirs(out_database_location, exist_ok=True)
 
         self.env = SimpleLMDBDataset(out_database_location, map_size)
+        self.speaker_encoder = self.load_resnet_encoder(
+            checkpoint_path, device)
 
         self.folder_list = folder_list
         self.file_list = file_list
@@ -103,6 +107,21 @@ class SimpleDataset(torch.utils.data.Dataset):
         elif split_set == "full":
             self.offset = 0
 
+    def load_resnet_encoder(self, checkpoint_path, device):
+        model = ResNetModel(512).eval().to(device)
+        checkpoint = torch.load(checkpoint_path, map_location=device)
+        print("loading speaker encoder")
+
+        new_state_dict = {}
+        for k, v in checkpoint.items():
+            try:
+                new_state_dict[k[6:]] = checkpoint[k]
+            except KeyError:
+                new_state_dict[k] = v
+
+        model.load_state_dict(new_state_dict)
+        return model
+
     def _preprocess(self):
         extension = self.extension.split(",")
         idx = 0
@@ -126,9 +145,12 @@ class SimpleDataset(torch.utils.data.Dataset):
             if output is not None:
                 for o in output:
                     perturbed_o = perturb(o, self.sampling_rate)[0]
+                    speaker_emb = self.speaker_encoder(
+                        torch.tensor(o, dtype=torch.float32).unsqueeze(0))
                     self.env[idx] = {
                         'data_clean': o,
-                        'data_perturbed': perturbed_o
+                        'data_perturbed': perturbed_o,
+                        'speaker_emb': speaker_emb[0]
                     }
                     idx += 1
 
@@ -140,9 +162,14 @@ class SimpleDataset(torch.utils.data.Dataset):
 
         data_clean = data['data_clean']
         data_perturbed = data['data_perturbed']
+        speaker_emb = data['speaker_emb']
 
         if self.transforms is not None:
             data_clean = self.transforms(data_clean)
             data_perturbed = self.transforms(data_perturbed)
 
-        return {'data_clean': data_clean, 'data_perturbed': data_perturbed}
+        return {
+            'data_clean': data_clean,
+            'data_perturbed': data_perturbed,
+            'speaker_emb': speaker_emb
+        }

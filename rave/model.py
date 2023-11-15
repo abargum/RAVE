@@ -663,7 +663,7 @@ class RAVE(pl.LightningModule):
             bias,
         )
 
-        new_latent_size = latent_size + 192  #pitch dim
+        new_latent_size = latent_size + 512  #pitch dim
         self.decoder = Generator(
             new_latent_size,
             capacity,
@@ -711,7 +711,7 @@ class RAVE(pl.LightningModule):
 
         self.block_size = block_size
         self.excitation_module = ExcitationModule(self.sr, self.block_size)
-        self.speaker_encoder = Speaker()
+        #self.speaker_encoder = Speaker()
 
     def configure_optimizers(self):
         gen_p = list(self.encoder.parameters())
@@ -784,7 +784,7 @@ class RAVE(pl.LightningModule):
         x = batch['data_clean']
 
         # SPEAKER EMBEDDING AND PITCH EXCITATION
-        sp = self.speaker_encoder(x)
+        sp = batch['speaker_emb']
         sp = torch.permute(sp.unsqueeze(1).repeat(1, 32, 1), (0, 2, 1))
 
         pitch = get_pitch(x, self.block_size).unsqueeze(-1)
@@ -918,8 +918,6 @@ class RAVE(pl.LightningModule):
 
         # print(p)
 
-        # print(p)
-
     def encode(self, x):
         if self.pqmf is not None:
             x = self.pqmf(x)
@@ -939,7 +937,7 @@ class RAVE(pl.LightningModule):
         x = batch['data_clean']
 
         # SPEAKER EMBEDDING AND PITCH EXCITATION
-        sp = self.speaker_encoder(x)
+        sp = batch['speaker_emb']
         sp = torch.permute(sp.unsqueeze(1).repeat(1, 32, 1), (0, 2, 1))
 
         pitch = get_pitch(x, self.block_size).unsqueeze(-1)
