@@ -1012,7 +1012,9 @@ class RAVE(pl.LightningModule):
 
         wandb.log({
             f"audio_val_{self.saved_step.item():06d}":
-            wandb.Audio(y, caption="audio", sample_rate=self.sr)
+            wandb.Audio(y.detach().cpu().numpy(),
+                        caption="audio",
+                        sample_rate=self.sr)
         })
 
         y_ex = torch.cat(excitation, 0)[:64].reshape(-1)
@@ -1021,7 +1023,9 @@ class RAVE(pl.LightningModule):
 
         wandb.log({
             f"audio_ex{self.saved_step.item():06d}":
-            wandb.Audio(y_ex, caption="audio", sample_rate=self.sr)
+            wandb.Audio(y_ex.detach().cpu().numpy(),
+                        caption="audio",
+                        sample_rate=self.sr)
         })
 
         x_per = torch.cat(perturbed, 0)[:64].reshape(-1)
@@ -1030,7 +1034,9 @@ class RAVE(pl.LightningModule):
 
         wandb.log({
             f"audio_per{self.saved_step.item():06d}":
-            wandb.Audio(x_per, caption="audio", sample_rate=self.sr)
+            wandb.Audio(x_per.detach().cpu().numpy(),
+                        caption="audio",
+                        sample_rate=self.sr)
         })
 
         self.idx += 1
