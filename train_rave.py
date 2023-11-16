@@ -7,6 +7,7 @@ from rave.core import search_for_run
 
 #from udls import SimpleDataset, simple_audio_preprocess
 import sys
+import wandb
 
 sys.path.insert(1, '../udls_extended/')
 
@@ -19,8 +20,6 @@ import os
 import numpy as np
 
 import GPUtil as gpu
-
-import wandb
 
 from udls.transforms import Compose, RandomApply, Dequantize, RandomCrop
 
@@ -65,12 +64,12 @@ if __name__ == "__main__":
         SR = 48000
         N_SIGNAL = 65536
         MAX_STEPS = setting(default=3000000, small=3000000, large=6000000)
-        VAL_EVERY = 10
+        VAL_EVERY = 10000
         BLOCK_SIZE = 128
 
         BATCH = 8
 
-        SPEAKER_ENCODER = 'ECAPA'
+        SPEAKER_ENCODER = 'RESNET'
 
         NAME = None
 
@@ -154,7 +153,7 @@ if __name__ == "__main__":
         generator=torch.Generator().manual_seed(42),
     )
 
-    num_workers = 0 if os.name == "nt" else 0
+    num_workers = 0 if os.name == "nt" else 10
     train = DataLoader(train,
                        args.BATCH,
                        True,
