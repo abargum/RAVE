@@ -176,9 +176,9 @@ class SimpleDataset_VCTK(torch.utils.data.Dataset):
                                 if output is not None:
                                     for o in output:
                                         if self.speaker_model == "RESNET":
-                                            utt_emb = self.speaker_encoder(torch.tensor(o, dtype=torch.float32).unsqueeze(0))
+                                            utt_emb = self.speaker_encoder(torch.tensor(o, dtype=torch.float32).unsqueeze(0).to(torch.device('cuda')))
                                         else:
-                                            utt_emb = self.speaker_encoder(torch.tensor(o, dtype=torch.float32).unsqueeze(0), aug=False)
+                                            utt_emb = self.speaker_encoder(torch.tensor(o, dtype=torch.float32).unsqueeze(0).to(torch.device('cuda')), aug=False)
                                         utt_emb = utt_emb.detach().cpu().squeeze().numpy()
                                         utt_embeddings.append(utt_emb)
 
