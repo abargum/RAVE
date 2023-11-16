@@ -61,7 +61,7 @@ class ResNetSE(nn.Module):
             n_fft=512,
             win_length=400,
             hop_length=160,
-            window_fn=torch.hamming_window,
+            window_fn=(torch.hamming_window),
             n_mels=n_mels)
 
         # Instance normalization per mel channel in spectrogram.

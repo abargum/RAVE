@@ -17,7 +17,6 @@ from time import time
 
 import cached_conv as cc
 
-from .ecapa import ECAPA_TDNN
 from .excitation import ExcitationModule, get_pitch, get_rms_val, upsample
 
 import wandb
@@ -26,7 +25,6 @@ import transformers
 from transformers import logging
 
 logging.set_verbosity_error()
-
 
 class Profiler:
     def __init__(self):
@@ -64,7 +62,6 @@ class Residual(nn.Module):
 # ------------------------------------
 # RESIDUAL STACK FOR DECODER
 # ------------------------------------
-
 
 class ResidualStack(nn.Module):
     def __init__(self,
@@ -205,7 +202,6 @@ class NoiseGenerator(nn.Module):
 # ------------------------------------
 # FOR GENERATOR
 # ------------------------------------
-
 
 class DownsampleLayer(nn.Module):
     def __init__(self,
@@ -458,53 +454,9 @@ class Generator(nn.Module):
 
         return waveform
 
-
-# ------------------------------------------------------------------------
-# SPEAKER ENCODER
-# ------------------------------------------------------------------------
-class Speaker(torch.nn.Module):
-    def __init__(self, conf=None):
-        """We train a speaker embedding network that uses the 1st layer of XLSR-53 as an input. For the speaker embedding network, we borrow the neural architecture from a state-of-the-art speaker recognition network [14]
-
-        Args:
-            conf:
-        """
-        super(Speaker, self).__init__()
-        self.conf = conf
-
-        self.wav2vec2 = transformers.Wav2Vec2ForPreTraining.from_pretrained(
-            "facebook/wav2vec2-large-xlsr-53")
-        for param in self.wav2vec2.parameters():
-            param.requires_grad = False
-            param.grad = None
-        self.wav2vec2.eval()
-
-        # c_in = 1024 for wav2vec2
-        # original paper[14] used 512 and 192 for c_mid and c_out, respectively
-        self.spk = ECAPA_TDNN(c_in=1024, c_mid=512, c_out=192)
-
-    def forward(self, x):
-        """
-
-        Args:
-            x: torch.Tensor of shape (B x t)
-
-        Returns:
-            y: torch.Tensor of shape (B x 192)
-        """
-        with torch.no_grad():
-            outputs = self.wav2vec2(x, output_hidden_states=True)
-        y = outputs.hidden_states[1]  # B x t x C(1024)
-        y = y.permute((0, 2, 1))  # B x t x C -> B x C x t
-        y = self.spk(y)  # B x C(1024) x t -> B x D(192)
-        y = torch.nn.functional.normalize(y, p=2, dim=-1)
-        return y
-
-
 # ------------------------------------
 # ENCODER
 # ------------------------------------
-
 
 class Encoder(nn.Module):
     def __init__(self,
@@ -636,6 +588,7 @@ class RAVE(pl.LightningModule):
                  warmup,
                  mode,
                  block_size,
+                 speaker_encoder,
                  no_latency=False,
                  min_kl=1e-4,
                  max_kl=5e-1,
@@ -663,7 +616,14 @@ class RAVE(pl.LightningModule):
             bias,
         )
 
-        new_latent_size = latent_size + 512  #pitch dim
+        if speaker_encoder == "RESNET":
+            speaker_size = 512
+        elif speaker_encoder == "ECAPA":
+            speaker_size = 192
+        else:
+            speaker_size = 0
+
+        new_latent_size = latent_size + speaker_size
         self.decoder = Generator(
             new_latent_size,
             capacity,
@@ -711,7 +671,6 @@ class RAVE(pl.LightningModule):
 
         self.block_size = block_size
         self.excitation_module = ExcitationModule(self.sr, self.block_size)
-        #self.speaker_encoder = Speaker()
 
     def configure_optimizers(self):
         gen_p = list(self.encoder.parameters())

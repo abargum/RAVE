@@ -10,7 +10,8 @@ import sys
 
 sys.path.insert(1, '../udls_extended/')
 
-from udls_extended import SimpleDataset, simple_audio_preprocess
+from udls_extended import SimpleDataset_VCTK as SimpleDataset
+from udls_extended import simple_audio_preprocess
 from effortless_config import Config, setting
 import pytorch_lightning as pl
 from os import environ, path
@@ -55,7 +56,7 @@ if __name__ == "__main__":
         D_MULTIPLIER = 4
         D_N_LAYERS = 4
 
-        WARMUP = setting(default=150000, small=1000000, large=3000000)
+        WARMUP = setting(default=1000000, small=1000000, large=3000000)
         MODE = "hinge"
         CKPT = None
 
@@ -68,6 +69,8 @@ if __name__ == "__main__":
         BLOCK_SIZE = 128
 
         BATCH = 8
+
+        SPEAKER_ENCODER = 'ECAPA'
 
         NAME = None
 
@@ -98,6 +101,7 @@ if __name__ == "__main__":
         warmup=args.WARMUP,
         mode=args.MODE,
         block_size=args.BLOCK_SIZE,
+        speaker_encoder=args.SPEAKER_ENCODER,
         no_latency=args.NO_LATENCY,
         sr=args.SR,
         min_kl=args.MIN_KL,
@@ -106,11 +110,15 @@ if __name__ == "__main__":
         feature_match=args.FEATURE_MATCH,
     )
 
-    x = {
-        'data_clean': torch.zeros(args.BATCH, 2**16),
+    if args.SPEAKER_ENCODER == "RESNET":
+        speaker_size = 512
+    else:
+        speaker_size = 192
+
+    x = {'data_clean': torch.zeros(args.BATCH, 2**16),
         'data_perturbed': torch.zeros(args.BATCH, 2**16),
-        'speaker_emb': torch.zeros(args.BATCH, 512)
-    }
+        'speaker_emb': torch.zeros(args.BATCH, speaker_size)}
+    
     model.validation_step(x, 0)
 
     preprocess = lambda name: simple_audio_preprocess(
@@ -120,8 +128,8 @@ if __name__ == "__main__":
 
     dataset = SimpleDataset(
         args.SR,
-        "speaker_embedding/resnet34sel_pretrained.pt",
-        torch.device('cpu'),
+        args.SPEAKER_ENCODER,
+        torch.device('cuda'),
         args.PREPROCESSED,
         args.WAV,
         preprocess_function=preprocess,
@@ -158,10 +166,12 @@ if __name__ == "__main__":
     clean_example = example['data_clean']
     perturbed_example = example['data_perturbed']
     speaker_emb = example['speaker_emb']
+    speaker_id = example['speaker_id']
     print("Input Audio Shape:", clean_example.shape,
           "\nPerturbed Audio Shape:", perturbed_example.shape,
-          "\nSpeaker Embedding Shape:", speaker_emb.shape)
-
+          "\nSpeaker Embedding Shape:", speaker_emb.shape,
+          "\nSpeaker ID Example:", speaker_id)
+    
     # CHECKPOINT CALLBACKS
     validation_checkpoint = pl.callbacks.ModelCheckpoint(
         monitor="validation",
