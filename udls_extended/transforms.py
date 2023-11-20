@@ -4,11 +4,31 @@ import librosa as li
 import numpy as np
 import torch
 
+from .perturbation import wav_to_Sound, formant_and_pitch_shift, parametric_equalizer
+
 
 class Transform(object):
 
     def __call__(self, x: torch.Tensor):
         raise NotImplementedError
+
+
+class FormantPitchShift(Transform):
+    def __init__(self, sr):
+        self.sr = sr
+
+    def __call__(self, x: np.ndarray):
+        sound = wav_to_Sound(x, sampling_frequency=self.sr)
+        sound = formant_and_pitch_shift(sound).values
+        return x, sound[0]
+    
+
+class PEQ(Transform):
+    def __init__(self, sr):
+        self.sr = sr
+
+    def __call__(self, x: np.ndarray):
+        return x, parametric_equalizer(x, self.sr)
 
 
 class RandomApply(Transform):
@@ -39,6 +59,26 @@ class Compose(Transform):
         for elm in self.transform_list:
             x, x_p = elm(x, x_p)
         return x, x_p
+    
+
+class Perturb(Transform):
+    """
+    Apply a list of perturbations and transform sequentially
+    """
+
+    def __init__(self, transform_list, sr):
+        self.peq = PEQ(sr)
+        self.p_and_f = FormantPitchShift(sr)
+
+        self.transform_list = transform_list
+
+    def __call__(self, x: np.ndarray):
+        x, x_p = self.peq(x)
+        x, x_p = self.p_and_f(x_p)
+
+        for elm in self.transform_list:
+            x, x_p = elm(x, x_p)
+        return x, x_p
 
 
 class RandomChoice(Transform):
@@ -52,59 +92,6 @@ class RandomChoice(Transform):
     def __call__(self, x: np.ndarray):
         x = choice(self.transform_list)(x)
         return x
-
-
-class PitchShift(Transform):
-
-    def __init__(self, mean, std, sr):
-        self.mean = mean
-        self.std = std
-        self.sr = sr
-
-    def __call__(self, x: np.ndarray):
-        r = self.std * (random() - .5) + self.mean
-        x = li.effects.pitch_shift(x, self.sr, r, res_type="kaiser_fast")
-        return x
-
-
-class Reverb(Transform):
-
-    def __init__(self, mean, std, sr):
-        self.mean = mean
-        self.std = std
-        self.sr = sr
-
-    def __call__(self, x: np.ndarray):
-        r = self.std * (random() - .5) + self.mean
-
-        noise = 2 * np.random.rand(self.sr) - 1
-        fade = np.linspace(1, 0, self.sr)
-        exp = np.exp(-np.linspace(0, r, self.sr))
-
-        impulse = noise * fade * exp
-        impulse[0] = 1
-
-        shape_x_ori = len(x)
-        N = max(len(x), len(impulse))
-        x = np.pad(x, (0, N - len(x)))
-        impulse = np.pad(impulse, (0, N - len(impulse)))
-
-        y = np.fft.irfft(np.fft.rfft(x) * np.fft.rfft(impulse))
-        y = y[:shape_x_ori]
-
-        return y
-
-
-class Noise(Transform):
-    """
-    Adds uniform noise with std 
-    """
-
-    def __init__(self, std):
-        self.std = std
-
-    def __call__(self, x: np.ndarray):
-        return x + self.std * (2 * np.random.rand(len(x)) - 1)
 
 
 class RandomCrop(Transform):
