@@ -21,7 +21,7 @@ import numpy as np
 
 import GPUtil as gpu
 
-from udls.transforms import Compose, RandomApply, Dequantize, RandomCrop
+from udls_extended.transforms import Compose, RandomApply, Dequantize, RandomCrop
 
 if __name__ == "__main__":
 
