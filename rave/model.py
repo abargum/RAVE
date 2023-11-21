@@ -766,14 +766,14 @@ class RAVE(pl.LightningModule):
             self.encoder.eval()
 
         # ENCODE INPUT
-        z, kl = self.reparametrize(*self.encoder(x_perturbed))
+        z_init, kl = self.reparametrize(*self.encoder(x_perturbed))
         p.tick("encode")
 
         if self.warmed_up:  # FREEZE ENCODER
             z = z.detach()
             kl = kl.detach()
 
-        z = torch.cat((z, sp), 1)
+        z = torch.cat((z_init, sp), 1)
 
         # DECODE LATENT
         y = self.decoder(z, excitation, add_noise=self.warmed_up)
@@ -782,6 +782,10 @@ class RAVE(pl.LightningModule):
         # DISTANCE BETWEEN INPUT AND OUTPUT
         distance = self.distance(x_clean, y)
         p.tick("mb distance")
+
+        reverse_z, _ = self.reparametrize(*self.encoder(y))
+        content_loss = torch.nn.L1Loss(z_init, reverse_z)
+        distance += content_loss
 
         if self.pqmf is not None:  # FULL BAND RECOMPOSITION
             x_clean = self.pqmf.inverse(x_clean)
@@ -866,13 +870,15 @@ class RAVE(pl.LightningModule):
         self.log("distance", distance)
         self.log("beta", beta)
         self.log("feature_matching", feature_matching_distance)
+        self.log("content_loss", content_loss)
         p.tick("log")
 
         wandb.log({
             "loss_dis": loss_dis,
             "loss_gen": loss_gen,
             "distance": distance,
-            "feature_matching": feature_matching_distance
+            "feature_matching": feature_matching_distance,
+            "content_loss": content_loss
         })
 
         # print(p)

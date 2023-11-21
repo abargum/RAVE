@@ -15,7 +15,6 @@ from scipy.io.wavfile import read as read_wav_file
 from tqdm import tqdm
 
 from .base_dataset import SimpleLMDBDataset
-from .perturbation import perturb
 from .ResNetSE34L import MainModel as ResNetModel
 from .ecapa_tdnn import ECAPA_TDNN
 
@@ -206,11 +205,9 @@ class SimpleDataset_VCTK(torch.utils.data.Dataset):
                 output = self.preprocess_function(wav)
                 if output is not None:
                     for o in output:
-                        perturbed_o = perturb(o, self.sampling_rate)[0]
                         speaker_emb, _ = resnet_emb_gmms[speaker_id].sample(1)
                         self.env[idx] = {
                             'data_clean': o,
-                            'data_perturbed': perturbed_o,
                             'speaker_emb': speaker_emb[0],
                             'speaker_id': speaker_id
                         }
@@ -224,8 +221,6 @@ class SimpleDataset_VCTK(torch.utils.data.Dataset):
         data = self.env[self.index[index + self.offset]]
 
         if self.transforms is not None:
-            # data_clean, data_perturbed = self.transforms(data['data_clean'],
-            #                                             data['data_perturbed'])
             data_clean, data_perturbed = self.transforms(data['data_clean'])
 
         return {
