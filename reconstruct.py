@@ -75,7 +75,7 @@ for i in range(20):
 in_index = 3
 target_index = 14
     
-in_sig = dataset[in_index]['data_perturbed']
+in_sig = dataset[in_index]['data_clean']
 print("In ID:", dataset[in_index]['speaker_id'], "out ID:", dataset[target_index]['speaker_id'])
 
 target = dataset[target_index]['data_clean']
@@ -112,7 +112,7 @@ pad = (ratio - (n_sample % ratio)) % ratio
 x = torch.nn.functional.pad(x, (0, pad))
 x = x[:, 55000:(55000+65536)]
 
-#embed = torch.ones(embedding.shape).to(device) * -5
+#embed = torch.zeros(embedding.shape).to(device)
 
 # ENCODE / DECODE
 z, z_cat, ex = rave.encode(x, embedding, 1.0)

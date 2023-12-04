@@ -777,7 +777,9 @@ class RAVE(pl.LightningModule):
             kl = kl.detach()
 
         z = torch.cat((z_init, sp), 1)
-        z = z.detach()
+        
+        if self.warmed_up:
+            z = z.detach()
 
         # DECODE LATENT
         y = self.decoder(z, excitation, add_noise=self.warmed_up)
