@@ -6,6 +6,7 @@ from tqdm import tqdm
 
 from rave import RAVE
 from rave.core import search_for_run
+from rave.core import random_phase_mangle, EMAModelCheckPoint
 
 from effortless_config import Config
 from os import path, makedirs, environ
@@ -17,6 +18,13 @@ import GPUtil as gpu
 
 import soundfile as sf
 
+import numpy as np
+from torch.utils.data import DataLoader, random_split
+
+from udls_extended import SimpleDataset_VCTK as SimpleDataset
+from udls_extended import simple_audio_preprocess
+
+from udls_extended.transforms import Compose, RandomApply, Dequantize, RandomCrop, Perturb
 
 class args(Config):
     CKPT = None  # PATH TO YOUR PRETRAINED CHECKPOINT
@@ -41,6 +49,38 @@ else:
 
 device = torch.device("cuda:0" if use_gpu else "cpu")
 
+# LOAD TRAINING DATA FOR EMBEDDINGS
+preprocess = lambda name: simple_audio_preprocess(
+        48000,
+        2 * 65536,
+    )(name).astype(np.float16)
+
+dataset = SimpleDataset(
+        48000,
+        "RESNET",
+        torch.device('cuda'),
+        "data/vctk-full/rave",
+        "wav48_silence_trimmed",
+        preprocess_function=preprocess,
+        split_set="full",
+        transforms=Perturb([
+            lambda x, x_p: (x.astype(np.float32), x_p.astype(np.float32)),
+        ],
+        48000),
+        seed=123)
+
+for i in range(20):
+    print(i, dataset[i]['speaker_id'])
+
+in_index = 3
+target_index = 14
+    
+in_sig = dataset[in_index]['data_perturbed']
+print("In ID:", dataset[in_index]['speaker_id'], "out ID:", dataset[target_index]['speaker_id'])
+
+target = dataset[target_index]['data_clean']
+embedding = torch.tensor(dataset[target_index]['speaker_emb']).unsqueeze(0).to(device)
+
 # LOAD RAVE
 rave = RAVE.load_from_checkpoint(
     search_for_run(args.CKPT),
@@ -48,31 +88,38 @@ rave = RAVE.load_from_checkpoint(
 ).eval().to(device)
 
 # COMPUTE LATENT COMPRESSION RATIO
-x = torch.randn(1, 1, 2**14).to(device)
-z = rave.encode(x)
+x = torch.randn(1, 2**16).to(device)
+z, z_cat, ex = rave.encode(x, embedding, 1.0)
 ratio = x.shape[-1] // z.shape[-1]
 
 # SEARCH FOR WAV FILES
-audios = tqdm(list(Path(args.WAV_FOLDER).rglob("*.wav")))
+#audios = tqdm(list(Path(args.WAV_FOLDER).rglob("*.flac")))
 
 # RECONSTRUCTION
-makedirs(args.OUT, exist_ok=True)
-for audio in audios:
-    audio_name = path.splitext(path.basename(audio))[0]
-    audios.set_description(audio_name)
+#makedirs(args.OUT, exist_ok=True)
+#for audio in audios:
+    #audio_name = path.splitext(path.basename(audio))[0]
+    #audios.set_description(audio_name)
 
     # LOAD AUDIO TO TENSOR
-    x, sr = li.load(audio, sr=rave.sr)
-    x = torch.from_numpy(x).reshape(1, 1, -1).float().to(device)
+    #x, sr = li.load(audio, sr=rave.sr)
+x = in_sig
+x = torch.from_numpy(x).reshape(1, -1).float().to(device)
 
-    # PAD AUDIO
-    n_sample = x.shape[-1]
-    pad = (ratio - (n_sample % ratio)) % ratio
-    x = torch.nn.functional.pad(x, (0, pad))
+# PAD AUDIO
+n_sample = x.shape[-1]
+pad = (ratio - (n_sample % ratio)) % ratio
+x = torch.nn.functional.pad(x, (0, pad))
+x = x[:, 55000:(55000+65536)]
 
-    # ENCODE / DECODE
-    y = rave.decode(rave.encode(x))
-    y = y.reshape(-1).cpu().numpy()[:n_sample]
+#embed = torch.ones(embedding.shape).to(device) * -5
 
-    # WRITE AUDIO
-    sf.write(path.join(args.OUT, f"{audio_name}_reconstruction.wav"), y, sr)
+# ENCODE / DECODE
+z, z_cat, ex = rave.encode(x, embedding, 1.0)
+y = rave.decode(z_cat, ex)
+y = y.reshape(-1).cpu().numpy()[:n_sample]
+
+# WRITE AUDIO
+sf.write(path.join(args.OUT, "reconstruction.wav"), y, 48000)
+sf.write(path.join(args.OUT, "input.wav"), x.reshape(-1).cpu().numpy(), 48000)
+sf.write(path.join(args.OUT, "target.wav"), target, 48000)

@@ -480,7 +480,7 @@ class Encoder(nn.Module):
             out_dim = 2**(i + 1) * capacity
 
             net.append(nn.BatchNorm1d(in_dim))
-            net.append(nn.LeakyReLU(.2))
+            net.append(nn.LeakyReLU(.25))
             net.append(
                 cc.Conv1d(
                     in_dim,
@@ -622,6 +622,8 @@ class RAVE(pl.LightningModule):
             speaker_size = 192
         else:
             speaker_size = 0
+            
+        #self.speaker_projection = torch.nn.Linear(speaker_size, 64)
 
         new_latent_size = latent_size + speaker_size
         self.decoder = Generator(
@@ -744,6 +746,7 @@ class RAVE(pl.LightningModule):
 
         # SPEAKER EMBEDDING AND PITCH EXCITATION
         sp = batch['speaker_emb']
+        #sp = self.speaker_projection(sp)
         sp = torch.permute(sp.unsqueeze(1).repeat(1, 32, 1), (0, 2, 1))
 
         pitch = get_pitch(x, self.block_size).unsqueeze(-1)
@@ -770,10 +773,11 @@ class RAVE(pl.LightningModule):
         p.tick("encode")
 
         if self.warmed_up:  # FREEZE ENCODER
-            z = z.detach()
+            z_init = z_init.detach()
             kl = kl.detach()
 
         z = torch.cat((z_init, sp), 1)
+        z = z.detach()
 
         # DECODE LATENT
         y = self.decoder(z, excitation, add_noise=self.warmed_up)
@@ -783,9 +787,9 @@ class RAVE(pl.LightningModule):
         distance = self.distance(x_clean, y)
         p.tick("mb distance")
 
-        reverse_z, _ = self.reparametrize(*self.encoder(y))
-        content_loss = torch.nn.L1Loss(z_init, reverse_z)
-        distance += content_loss
+        #reverse_z, _ = self.reparametrize(*self.encoder(y))
+        #content_loss = torch.nn.L1Loss(z_init, reverse_z)
+        #distance += content_loss
 
         if self.pqmf is not None:  # FULL BAND RECOMPOSITION
             x_clean = self.pqmf.inverse(x_clean)
@@ -870,29 +874,43 @@ class RAVE(pl.LightningModule):
         self.log("distance", distance)
         self.log("beta", beta)
         self.log("feature_matching", feature_matching_distance)
-        self.log("content_loss", content_loss)
+        #self.log("content_loss", content_loss)
         p.tick("log")
 
         wandb.log({
             "loss_dis": loss_dis,
             "loss_gen": loss_gen,
             "distance": distance,
-            "feature_matching": feature_matching_distance,
-            "content_loss": content_loss
+            "feature_matching": feature_matching_distance
+            #"content_loss": content_loss
         })
 
         # print(p)
 
-    def encode(self, x):
+    def encode(self, x, sp, pitch):
+        
+        # SPEAKER EMBEDDING AND PITCH EXCITATION
+        sp = torch.permute(sp.unsqueeze(1).repeat(1, 32, 1), (0, 2, 1))
+
+        pitch = get_pitch(x, self.block_size).unsqueeze(-1) * pitch
+        pitch = upsample(pitch, self.block_size)
+        excitation, phase = self.excitation_module(pitch)
+        rms_val = get_rms_val(x, excitation, self.block_size)
+        
+        excitation = (excitation * rms_val).unsqueeze(1)
+        x = x.unsqueeze(1)
+        
         if self.pqmf is not None:
             x = self.pqmf(x)
+            excitation = self.pqmf(excitation)
 
         mean, scale = self.encoder(x)
         z, _ = self.reparametrize(mean, scale)
-        return z
+        
+        return z, torch.cat((z, sp), 1), excitation
 
-    def decode(self, z):
-        y = self.decoder(z, add_noise=True)
+    def decode(self, z, excitation):
+        y = self.decoder(z, excitation, add_noise=True)
         if self.pqmf is not None:
             y = self.pqmf.inverse(y)
         return y
@@ -903,6 +921,7 @@ class RAVE(pl.LightningModule):
 
         # SPEAKER EMBEDDING AND PITCH EXCITATION
         sp = batch['speaker_emb']
+        #sp = self.speaker_projection(sp)
         sp = torch.permute(sp.unsqueeze(1).repeat(1, 32, 1), (0, 2, 1))
 
         pitch = get_pitch(x, self.block_size).unsqueeze(-1)

@@ -12,6 +12,7 @@ import wandb
 sys.path.insert(1, '../udls_extended/')
 
 from udls_extended import SimpleDataset_VCTK as SimpleDataset
+from udls_extended.transforms import Compose, RandomApply, Dequantize, RandomCrop, Perturb
 from udls_extended import simple_audio_preprocess
 from effortless_config import Config, setting
 import pytorch_lightning as pl
@@ -21,7 +22,11 @@ import numpy as np
 
 import GPUtil as gpu
 
-from udls_extended.transforms import Compose, RandomApply, Dequantize, RandomCrop, Perturb
+
+
+from sklearn.decomposition import PCA
+import matplotlib.pyplot as plt
+import numpy as np
 
 if __name__ == "__main__":
 
@@ -30,7 +35,7 @@ if __name__ == "__main__":
 
         DATA_SIZE = 16
         CAPACITY = setting(default=64, small=32, large=64)
-        LATENT_SIZE = 128
+        LATENT_SIZE = 64
         BIAS = True
         NO_LATENCY = False
         RATIOS = setting(
@@ -81,6 +86,7 @@ if __name__ == "__main__":
     # Initialize W and B
     # -------------------------------
     wandb.init(project="RAVE", name=f"{args.NAME}")
+    
     # -------------------------------
 
     model = RAVE(
@@ -165,6 +171,45 @@ if __name__ == "__main__":
         ],
         args.SR),
     )
+    
+    # Sample data for demonstration
+    speaker_E = []
+    speaker_ID = []
+    
+    i = 0
+    
+    for i, entry in enumerate(dataset):
+        print(i)
+        if i < 250:
+            speaker_E.append(entry['speaker_emb'])
+            speaker_ID.append(entry['speaker_id'])
+        else:
+            break
+        
+    print("exited")
+
+    pca = PCA(n_components=2)
+    components = pca.fit_transform(np.array(speaker_E))
+
+    fig, ax = plt.subplots()
+
+    # Create a dictionary to map unique speaker IDs to colors
+    unique_speakers = list(set(speaker_ID))
+    colors = plt.cm.get_cmap('tab10', len(unique_speakers))
+    color_dict = {speaker: colors(i) for i, speaker in enumerate(unique_speakers)}
+
+    # Scatter plot with different colors for each speaker ID
+    for i, speaker in enumerate(unique_speakers):
+        indices = [j for j, s in enumerate(speaker_ID) if s == speaker]
+        ax.scatter(components[indices, 0], components[indices, 1], label=speaker, color=color_dict[speaker])
+
+    # Display a legend outside the plot
+    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+
+    plt.xlabel('Principal Component 1')
+    plt.ylabel('Principal Component 2')
+
+    plt.savefig('scatter_plot_embeddings.png', bbox_inches='tight')
 
     val = max((2 * len(dataset)) // 100, 1)
     train = len(dataset) - val
