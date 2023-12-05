@@ -22,8 +22,6 @@ import numpy as np
 
 import GPUtil as gpu
 
-
-
 from sklearn.decomposition import PCA
 import matplotlib.pyplot as plt
 import numpy as np
