@@ -69,11 +69,11 @@ dataset = SimpleDataset(
         48000),
         seed=123)
 
-for i in range(20):
-    print(i, dataset[i]['speaker_id'])
+#for i in range(20):
+#    print(i, dataset[i]['speaker_id'])
 
 in_index = 3
-target_index = 14
+target_index = 16
     
 in_sig = dataset[in_index]['data_clean']
 print("In ID:", dataset[in_index]['speaker_id'], "out ID:", dataset[target_index]['speaker_id'])
@@ -93,31 +93,31 @@ z, z_cat, ex = rave.encode(x, embedding, 1.0)
 ratio = x.shape[-1] // z.shape[-1]
 
 # SEARCH FOR WAV FILES
-#audios = tqdm(list(Path(args.WAV_FOLDER).rglob("*.flac")))
+audios = tqdm(list(Path(args.WAV_FOLDER).rglob("*.wav")))
 
 # RECONSTRUCTION
-#makedirs(args.OUT, exist_ok=True)
-#for audio in audios:
-    #audio_name = path.splitext(path.basename(audio))[0]
-    #audios.set_description(audio_name)
+makedirs(args.OUT, exist_ok=True)
+for audio in audios:
+    audio_name = path.splitext(path.basename(audio))[0]
+    audios.set_description(audio_name)
 
     # LOAD AUDIO TO TENSOR
-    #x, sr = li.load(audio, sr=rave.sr)
-x = in_sig
-x = torch.from_numpy(x).reshape(1, -1).float().to(device)
+    x, sr = li.load(audio, sr=rave.sr)
+    #x = in_sig
+    x = torch.from_numpy(x).reshape(1, -1).float().to(device)
 
-# PAD AUDIO
-n_sample = x.shape[-1]
-pad = (ratio - (n_sample % ratio)) % ratio
-x = torch.nn.functional.pad(x, (0, pad))
-x = x[:, 55000:(55000+65536)]
+    # PAD AUDIO
+    n_sample = x.shape[-1]
+    pad = (ratio - (n_sample % ratio)) % ratio
+    x = torch.nn.functional.pad(x, (0, pad))
+    x = x[:, 55000:(55000+65536)]
 
-#embed = torch.zeros(embedding.shape).to(device)
+    #embed = torch.zeros(embedding.shape).to(device)
 
-# ENCODE / DECODE
-z, z_cat, ex = rave.encode(x, embedding, 1.0)
-y = rave.decode(z_cat, ex)
-y = y.reshape(-1).cpu().numpy()[:n_sample]
+    # ENCODE / DECODE
+    z, z_cat, ex = rave.encode(x, embedding, 1.0)
+    y = rave.decode(z_cat, ex)
+    y = y.reshape(-1).cpu().numpy()[:n_sample]
 
 # WRITE AUDIO
 sf.write(path.join(args.OUT, "reconstruction.wav"), y, 48000)
