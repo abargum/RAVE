@@ -197,10 +197,121 @@ class NoiseGenerator(nn.Module):
         noise = fft_convolve(noise, ir).permute(0, 2, 1, 3)
         noise = noise.reshape(noise.shape[0], noise.shape[1], -1)
         return noise
+    
+# ------------------------------------
+# OLD GENERATOR
+# ------------------------------------
+    
+class Generator_Old(nn.Module):
+    def __init__(self,
+                 latent_size,
+                 capacity,
+                 data_size,
+                 ratios,
+                 loud_stride,
+                 use_noise,
+                 noise_ratios,
+                 noise_bands,
+                 padding_mode,
+                 bias=False):
+        super().__init__()
+        net = [
+            wn(
+                cc.Conv1d(
+                    latent_size,
+                    2**len(ratios) * capacity,
+                    7,
+                    padding=cc.get_padding(7, mode=padding_mode),
+                    bias=bias,
+                ))
+        ]
+
+        for i, r in enumerate(ratios):
+            in_dim = 2**(len(ratios) - i) * capacity
+            out_dim = 2**(len(ratios) - i - 1) * capacity
+
+            net.append(
+                UpsampleLayer(
+                    in_dim,
+                    out_dim,
+                    r,
+                    padding_mode,
+                    cumulative_delay=net[-1].cumulative_delay,
+                ))
+            net.append(
+                ResidualStack(
+                    out_dim,
+                    3,
+                    padding_mode,
+                    cumulative_delay=net[-1].cumulative_delay,
+                ))
+
+        self.net = cc.CachedSequential(*net)
+
+        wave_gen = wn(
+            cc.Conv1d(
+                out_dim,
+                data_size,
+                7,
+                padding=cc.get_padding(7, mode=padding_mode),
+                bias=bias,
+            ))
+
+        loud_gen = wn(
+            cc.Conv1d(
+                out_dim,
+                1,
+                2 * loud_stride + 1,
+                stride=loud_stride,
+                padding=cc.get_padding(2 * loud_stride + 1,
+                                       loud_stride,
+                                       mode=padding_mode),
+                bias=bias,
+            ))
+
+        branches = [wave_gen, loud_gen]
+
+        if use_noise:
+            noise_gen = NoiseGenerator(
+                out_dim,
+                data_size,
+                noise_ratios,
+                noise_bands,
+                padding_mode=padding_mode,
+            )
+            branches.append(noise_gen)
+
+        self.synth = cc.AlignBranches(
+            *branches,
+            cumulative_delay=self.net.cumulative_delay,
+        )
+
+        self.use_noise = use_noise
+        self.loud_stride = loud_stride
+        self.cumulative_delay = self.synth.cumulative_delay
+
+    def forward(self, x, add_noise: bool = True):
+        x = self.net(x)
+
+        if self.use_noise:
+            waveform, loudness, noise = self.synth(x)
+        else:
+            waveform, loudness = self.synth(x)
+            noise = torch.zeros_like(waveform)
+
+        loudness = loudness.repeat_interleave(self.loud_stride)
+        loudness = loudness.reshape(x.shape[0], 1, -1)
+
+        waveform = torch.tanh(waveform) * mod_sigmoid(loudness)
+
+        if add_noise:
+            waveform = waveform + noise
+
+        return waveform
 
 
 # ------------------------------------
-# FOR GENERATOR
+# NEW GENERATOR
 # ------------------------------------
 
 class DownsampleLayer(nn.Module):
@@ -623,15 +734,14 @@ class RAVE(pl.LightningModule):
         else:
             speaker_size = 0
             
-        #self.speaker_projection = torch.nn.Linear(speaker_size, 64)
+        self.speaker_projection = torch.nn.Linear(speaker_size, 256)
 
-        new_latent_size = latent_size + speaker_size
-        self.decoder = Generator(
+        new_latent_size = latent_size + 256
+        self.decoder = Generator_Old(
             new_latent_size,
             capacity,
             data_size,
             ratios,
-            ratios_down,
             loud_stride,
             use_noise,
             noise_ratios,
@@ -673,6 +783,7 @@ class RAVE(pl.LightningModule):
 
         self.block_size = block_size
         self.excitation_module = ExcitationModule(self.sr, self.block_size)
+        self.contr_coeff = 1e-5
 
     def configure_optimizers(self):
         gen_p = list(self.encoder.parameters())
@@ -683,6 +794,33 @@ class RAVE(pl.LightningModule):
         dis_opt = torch.optim.Adam(dis_p, 1e-4, (.5, .9))
 
         return gen_opt, dis_opt
+    
+    def contrastive_loss(self, ling_1, ling_2, kappa=0.1, content_adj=10, candidates=15):
+    
+        ling_s = F.normalize(torch.stack([ling_1, ling_2], dim=0), p=2, dim=2)
+        num_tokens = ling_s.shape[-1]
+        pos = ling_s.prod(dim=0).sum(dim=1) / kappa
+        confusion = torch.matmul(ling_s.transpose(2, 3), ling_s) / kappa
+
+        placeholder = torch.zeros(num_tokens, device=self.device)
+        mask = torch.stack([
+            placeholder.scatter(
+                0,
+                (
+                    torch.randperm(num_tokens - content_adj, device=self.device)[:candidates]
+                    + i + content_adj // 2 + 1) % num_tokens,
+                1.)
+            for i in range(num_tokens)])
+
+        masked = confusion.masked_fill(~mask.to(torch.bool), -np.inf)
+        neg = torch.logsumexp(masked, dim=-1)
+
+        contr_loss = -torch.logsumexp(pos - neg, dim=-1).sum(dim=0).mean()
+        return contr_loss
+    
+    def update_warmup(self):
+        self.contr_coeff = min(
+            self.contr_coeff + 1e-5, 10)
 
     def lin_distance(self, x, y):
         return torch.norm(x - y) / torch.norm(x)
@@ -746,48 +884,59 @@ class RAVE(pl.LightningModule):
 
         # SPEAKER EMBEDDING AND PITCH EXCITATION
         sp = batch['speaker_emb']
-        #sp = self.speaker_projection(sp)
+        sp = self.speaker_projection(sp)
         sp = torch.permute(sp.unsqueeze(1).repeat(1, 32, 1), (0, 2, 1))
 
-        pitch = get_pitch(x, self.block_size).unsqueeze(-1)
-        pitch = upsample(pitch, self.block_size)
-        excitation, phase = self.excitation_module(pitch)
-        rms_val = get_rms_val(x, excitation, self.block_size)
-        excitation = (excitation * rms_val).unsqueeze(1)
+        #pitch = get_pitch(x, self.block_size).unsqueeze(-1)
+        #pitch = upsample(pitch, self.block_size)
+        #excitation, phase = self.excitation_module(pitch)
+        #rms_val = get_rms_val(x, excitation, self.block_size)
+        #excitation = (excitation * rms_val).unsqueeze(1)
         # --------------------------------------
 
         x_clean = x.unsqueeze(1)
-        x_perturbed = batch['data_perturbed'].unsqueeze(1)
-
+        x_perturbed = batch['data_perturbed_1'].unsqueeze(1)
+        x_perturbed_2 = batch['data_perturbed_2'].unsqueeze(1)
+        
         if self.pqmf is not None:  # MULTIBAND DECOMPOSITION
             x_perturbed = self.pqmf(x_perturbed)
+            x_perturbed_2 = self.pqmf(x_perturbed_2)
             x_clean = self.pqmf(x_clean)
-            excitation = self.pqmf(excitation)
+            #excitation = self.pqmf(excitation)
             p.tick("pqmf")
 
         if self.warmed_up:  # EVAL ENCODER
             self.encoder.eval()
 
         # ENCODE INPUT
-        z_init, kl = self.reparametrize(*self.encoder(x_perturbed))
+        z_init_1, kl = self.reparametrize(*self.encoder(x_perturbed))
         p.tick("encode")
+        
+        with torch.no_grad():
+            z_init_2, kl_2 = self.reparametrize(*self.encoder(x_perturbed_2))
+            z_init_2.detach()
 
         if self.warmed_up:  # FREEZE ENCODER
-            z_init = z_init.detach()
+            z_init_1 = z_init_1.detach()
             kl = kl.detach()
 
-        z = torch.cat((z_init, sp), 1)
+        z = torch.cat((z_init_1, sp), 1)
         
         if self.warmed_up:
             z = z.detach()
 
         # DECODE LATENT
-        y = self.decoder(z, excitation, add_noise=self.warmed_up)
+        y = self.decoder(z, add_noise=self.warmed_up)
         p.tick("decode")
 
         # DISTANCE BETWEEN INPUT AND OUTPUT
         distance = self.distance(x_clean, y)
         p.tick("mb distance")
+        
+        if self.warmed_up:
+            contrastrive_loss = 0
+        else:
+            contrastrive_loss = self.contrastive_loss(z_init_1, z_init_2)
 
         #reverse_z, _ = self.reparametrize(*self.encoder(y))
         #content_loss = torch.nn.L1Loss(z_init, reverse_z)
@@ -850,7 +999,7 @@ class RAVE(pl.LightningModule):
             min_beta=self.min_kl,
             max_beta=self.max_kl,
         )
-        loss_gen = distance + loss_adv + beta * kl
+        loss_gen = distance + loss_adv + beta * kl + contrastrive_loss * self.contr_coeff
         if self.feature_match:
             loss_gen = loss_gen + feature_matching_distance
         p.tick("gen loss compose")
@@ -883,36 +1032,41 @@ class RAVE(pl.LightningModule):
             "loss_dis": loss_dis,
             "loss_gen": loss_gen,
             "distance": distance,
-            "feature_matching": feature_matching_distance
+            "feature_matching": feature_matching_distance,
+            "contrastive_loss": contrastrive_loss,
+            "contrastive_coeff": self.contr_coeff,
             #"content_loss": content_loss
         })
+        
+        self.update_warmup()
 
         # print(p)
 
     def encode(self, x, sp, pitch):
         
         # SPEAKER EMBEDDING AND PITCH EXCITATION
+        sp = self.speaker_projection(sp)
         sp = torch.permute(sp.unsqueeze(1).repeat(1, 32, 1), (0, 2, 1))
 
-        pitch = get_pitch(x, self.block_size).unsqueeze(-1) * pitch
-        pitch = upsample(pitch, self.block_size)
-        excitation, phase = self.excitation_module(pitch)
-        rms_val = get_rms_val(x, excitation, self.block_size)
+        #pitch = get_pitch(x, self.block_size).unsqueeze(-1) * pitch
+        #pitch = upsample(pitch, self.block_size)
+        #excitation, phase = self.excitation_module(pitch)
+        #rms_val = get_rms_val(x, excitation, self.block_size)
         
-        excitation = (excitation * rms_val).unsqueeze(1)
+        #excitation = (excitation * rms_val).unsqueeze(1)
         x = x.unsqueeze(1)
         
         if self.pqmf is not None:
             x = self.pqmf(x)
-            excitation = self.pqmf(excitation)
+            #excitation = self.pqmf(excitation)
 
         mean, scale = self.encoder(x)
         z, _ = self.reparametrize(mean, scale)
         
-        return z, torch.cat((z, sp), 1), excitation
+        return z, torch.cat((z, sp), 1) #, excitation
 
-    def decode(self, z, excitation):
-        y = self.decoder(z, excitation, add_noise=True)
+    def decode(self, z):
+        y = self.decoder(z, add_noise=True)
         if self.pqmf is not None:
             y = self.pqmf.inverse(y)
         return y
@@ -923,35 +1077,35 @@ class RAVE(pl.LightningModule):
 
         # SPEAKER EMBEDDING AND PITCH EXCITATION
         sp = batch['speaker_emb']
-        #sp = self.speaker_projection(sp)
+        sp = self.speaker_projection(sp)
         sp = torch.permute(sp.unsqueeze(1).repeat(1, 32, 1), (0, 2, 1))
 
-        pitch = get_pitch(x, self.block_size).unsqueeze(-1)
-        pitch = upsample(pitch, self.block_size)
-        excitation, phase = self.excitation_module(pitch)
-        rms_val = get_rms_val(x, excitation, self.block_size)
-        excitation = (excitation * rms_val).unsqueeze(1)
+        #pitch = get_pitch(x, self.block_size).unsqueeze(-1)
+        #pitch = upsample(pitch, self.block_size)
+        #excitation, phase = self.excitation_module(pitch)
+        #rms_val = get_rms_val(x, excitation, self.block_size)
+        #excitation = (excitation * rms_val).unsqueeze(1)
         # --------------------------------------
 
         x_clean = x.unsqueeze(1)
-        x_perturbed = batch['data_perturbed'].unsqueeze(1)
+        x_perturbed = batch['data_perturbed_1'].unsqueeze(1)
 
         if self.pqmf is not None:
             x_clean = self.pqmf(x_clean)
             x_perturbed = self.pqmf(x_perturbed)
-            excitation = self.pqmf(excitation)
+            #excitation = self.pqmf(excitation)
 
         mean, scale = self.encoder(x_clean)
         z, _ = self.reparametrize(mean, scale)
 
         z = torch.cat((z, sp), 1)
-        y = self.decoder(z, excitation, add_noise=self.warmed_up)
+        y = self.decoder(z, add_noise=self.warmed_up)
 
         if self.pqmf is not None:
             x_clean = self.pqmf.inverse(x_clean)
             x_perturbed = self.pqmf.inverse(x_perturbed)
             y = self.pqmf.inverse(y)
-            excitation = self.pqmf.inverse(excitation)
+            #excitation = self.pqmf.inverse(excitation)
 
         distance = self.distance(x_clean, y)
 
@@ -959,11 +1113,10 @@ class RAVE(pl.LightningModule):
         self.log("validation", distance)
         wandb.log({"validation": distance})
 
-        return torch.cat([x_clean, y], -1), mean, torch.cat(
-            [x_clean, excitation], -1), torch.cat([x_clean, x_perturbed], -1)
+        return torch.cat([x_clean, y], -1), mean, torch.cat([x_clean, x_perturbed], -1)
 
     def validation_epoch_end(self, out):
-        audio, z, excitation, perturbed = list(zip(*out))
+        audio, z, perturbed = list(zip(*out))
 
         if self.saved_step > self.warmup:
             self.warmed_up = True
@@ -999,17 +1152,6 @@ class RAVE(pl.LightningModule):
         wandb.log({
             f"audio_val_{self.saved_step.item():06d}":
             wandb.Audio(y.detach().cpu().numpy(),
-                        caption="audio",
-                        sample_rate=self.sr)
-        })
-
-        y_ex = torch.cat(excitation, 0)[:64].reshape(-1)
-        self.logger.experiment.add_audio("audio_ex", y_ex,
-                                         self.saved_step.item(), self.sr)
-
-        wandb.log({
-            f"audio_ex{self.saved_step.item():06d}":
-            wandb.Audio(y_ex.detach().cpu().numpy(),
                         caption="audio",
                         sample_rate=self.sr)
         })

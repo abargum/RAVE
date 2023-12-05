@@ -121,7 +121,8 @@ if __name__ == "__main__":
         speaker_size = 192
 
     x = {'data_clean': torch.zeros(args.BATCH, 2**16),
-        'data_perturbed': torch.zeros(args.BATCH, 2**16),
+        'data_perturbed_1': torch.zeros(args.BATCH, 2**16),
+        'data_perturbed_2': torch.zeros(args.BATCH, 2**16),
         'speaker_emb': torch.zeros(args.BATCH, speaker_size)}
     
     model.validation_step(x, 0)
@@ -160,54 +161,54 @@ if __name__ == "__main__":
         preprocess_function=preprocess,
         split_set="full",
         transforms=Perturb([
-            lambda x, x_p: (x.astype(np.float32), x_p.astype(np.float32)),
+            lambda x, x_p_1, x_p_2: (x.astype(np.float32), x_p_1.astype(np.float32), x_p_2.astype(np.float32)),
             RandomCrop(args.N_SIGNAL),
             RandomApply(
                 lambda x: random_phase_mangle(x, 20, 2000, .99, args.SR),
                 p=.8,
             ),
             Dequantize(16),
-            lambda x, x_p: (x.astype(np.float32), x_p.astype(np.float32)),
+            lambda x, x_p_1, x_p_2: (x.astype(np.float32), x_p_1.astype(np.float32), x_p_2.astype(np.float32)),
         ],
         args.SR),
     )
     
-        # -------------- PLOT SPEAKER EMBEDDINGS ----------------
-        if args.PLOT:
-            speaker_E = []
-            speaker_ID = []
+    # -------------- PLOT SPEAKER EMBEDDINGS ----------------
+    if args.PLOT:
+        speaker_E = []
+        speaker_ID = []
 
-            for i, entry in enumerate(dataset):
-                if i < 250:
-                    speaker_E.append(entry['speaker_emb'])
-                    speaker_ID.append(entry['speaker_id'])
-                else:
-                    break
+        for i, entry in enumerate(dataset):
+            if i < 250:
+                speaker_E.append(entry['speaker_emb'])
+                speaker_ID.append(entry['speaker_id'])
+            else:
+                break
 
-            pca = PCA(n_components=2)
-            components = pca.fit_transform(np.array(speaker_E))
+        pca = PCA(n_components=2)
+        components = pca.fit_transform(np.array(speaker_E))
 
-            fig, ax = plt.subplots()
+        fig, ax = plt.subplots()
 
-            # Create a dictionary to map unique speaker IDs to colors
-            unique_speakers = list(set(speaker_ID))
-            colors = plt.cm.get_cmap('tab10', len(unique_speakers))
-            color_dict = {speaker: colors(i) for i, speaker in enumerate(unique_speakers)}
+        # Create a dictionary to map unique speaker IDs to colors
+        uniue_speakers = list(set(speaker_ID))
+        colors = plt.cm.get_cmap('tab10', len(unique_speakers))
+        color_dict = {speaker: colors(i) for i, speaker in enumerate(unique_speakers)}
 
-            # Scatter plot with different colors for each speaker ID
-            for i, speaker in enumerate(unique_speakers):
-                indices = [j for j, s in enumerate(speaker_ID) if s == speaker]
-                ax.scatter(components[indices, 0], components[indices, 1], label=speaker, color=color_dict[speaker])
+        # Scatter plot with different colors for each speaker ID
+        for i, speaker in enumerate(unique_speakers):
+            indices = [j for j, s in enumerate(speaker_ID) if s == speaker]
+            ax.scatter(components[indices, 0], components[indices, 1], label=speaker, color=color_dict[speaker])
 
-            # Display a legend outside the plot
-            ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+        # Display a legend outside the plot
+        ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
 
-            plt.xlabel('Principal Component 1')
-            plt.ylabel('Principal Component 2')
+        plt.xlabel('Principal Component 1')
+        plt.ylabel('Principal Component 2')
 
-            plt.savefig('scatter_plot_embeddings.png', bbox_inches='tight')
+        plt.savefig('scatter_plot_embeddings.png', bbox_inches='tight')
             
-            # ---------------------------------------------------
+        # ---------------------------------------------------
 
     val = max((2 * len(dataset)) // 100, 1)
     train = len(dataset) - val
@@ -227,7 +228,7 @@ if __name__ == "__main__":
 
     example = next(iter(train))
     clean_example = example['data_clean']
-    perturbed_example = example['data_perturbed']
+    perturbed_example = example['data_perturbed_1']
     speaker_emb = example['speaker_emb']
     speaker_id = example['speaker_id']
     print("Input Audio Shape:", clean_example.shape,
