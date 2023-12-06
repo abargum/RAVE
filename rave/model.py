@@ -1100,8 +1100,6 @@ class RAVE(pl.LightningModule):
         #self.log("content_loss", content_loss)
         p.tick("log")
 
-        print(contrastrive_loss)
-
         wandb.log({
             "loss_dis": loss_dis,
             "loss_gen": loss_gen,
@@ -1190,10 +1188,38 @@ class RAVE(pl.LightningModule):
         self.log("validation", distance)
         wandb.log({"validation": distance})
 
-        return torch.cat([x_clean, y], -1), mean, torch.cat([x_clean, x_perturbed_1, x_perturbed_2], -1)
+
+        #FOR CONVERSION
+        speaker_emb_avg = batch['speaker_id_avg']
+        speaker_emb_avg = self.speaker_projection(speaker_emb_avg)
+        speaker_emb_avg = torch.permute(speaker_emb_avg.unsqueeze(1).repeat(1, 32, 1), (0, 2, 1))
+
+        input_index = 0
+        target_index = 1
+
+        input_conversion = x[input_index].unsqueeze(0).unsqueeze(0)
+        target_conversion = x[target_index].unsqueeze(0).unsqueeze(0)
+        target_embedding = speaker_emb_avg[target_index].unsqueeze(0)
+
+        if self.pqmf is not None:
+            input_conversion = self.pqmf(input_conversion)
+
+        mean, scale = self.encoder(input_conversion)
+        z, _ = self.reparametrize(mean, scale)
+
+        z = torch.cat((z, target_embedding), 1)
+        converted = self.decoder(z, add_noise=self.warmed_up)
+
+        if self.pqmf is not None:
+            converted = self.pqmf.inverse(converted)
+            input_conversion = self.pqmf.inverse(input_conversion)
+
+        return (torch.cat([x_clean, y], -1), mean, 
+                torch.cat([x_clean, x_perturbed_1, x_perturbed_2], -1),
+                torch.cat([input_conversion, target_conversion, converted], -1))
 
     def validation_epoch_end(self, out):
-        audio, z, perturbed = list(zip(*out))
+        audio, z, perturbed, converted = list(zip(*out))
 
         if self.saved_step > self.warmup:
             self.warmed_up = True
@@ -1240,6 +1266,14 @@ class RAVE(pl.LightningModule):
         wandb.log({
             f"audio_per{self.saved_step.item():06d}":
             wandb.Audio(x_per.detach().cpu().numpy(),
+                        caption="audio",
+                        sample_rate=self.sr)
+        })
+
+        convert = torch.cat(converted, 0)[:64].reshape(-1)
+        wandb.log({
+            f"audio_conv{self.saved_step.item():06d}":
+            wandb.Audio(convert.detach().cpu().numpy(),
                         caption="audio",
                         sample_rate=self.sr)
         })

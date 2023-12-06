@@ -123,7 +123,8 @@ if __name__ == "__main__":
     x = {'data_clean': torch.zeros(args.BATCH, 2**16),
         'data_perturbed_1': torch.zeros(args.BATCH, 2**16),
         'data_perturbed_2': torch.zeros(args.BATCH, 2**16),
-        'speaker_emb': torch.zeros(args.BATCH, speaker_size)}
+        'speaker_emb': torch.zeros(args.BATCH, speaker_size),
+        'speaker_id_avg': torch.zeros(args.BATCH, speaker_size)}
     
     model.validation_step(x, 0)
 
