@@ -92,6 +92,7 @@ class SimpleDataset_VCTK(torch.utils.data.Dataset):
 
         self.transforms = transforms
         self.sampling_rate = sampling_rate
+        self.device = device
 
         # IF NO DATA INSIDE DATASET: PREPROCESS
         self.len = len(self.env)
@@ -175,9 +176,9 @@ class SimpleDataset_VCTK(torch.utils.data.Dataset):
                                 if output is not None:
                                     for o in output:
                                         if self.speaker_model == "RESNET":
-                                            utt_emb = self.speaker_encoder(torch.tensor(o, dtype=torch.float32).unsqueeze(0).to(torch.device('cuda')))
+                                            utt_emb = self.speaker_encoder(torch.tensor(o, dtype=torch.float32).unsqueeze(0).to(torch.device(self.device)))
                                         else:
-                                            utt_emb = self.speaker_encoder(torch.tensor(o, dtype=torch.float32).unsqueeze(0).to(torch.device('cuda')), aug=False)
+                                            utt_emb = self.speaker_encoder(torch.tensor(o, dtype=torch.float32).unsqueeze(0).to(torch.device(self.device)), aug=False)
                                         utt_emb = utt_emb.detach().cpu().squeeze().numpy()
                                         utt_embeddings.append(utt_emb)
 
@@ -206,7 +207,7 @@ class SimpleDataset_VCTK(torch.utils.data.Dataset):
                 if output is not None:
                     for o in output:
                         speaker_emb, _ = resnet_emb_gmms[speaker_id].sample(1)
-                        speaker_avg = vg_speaker_embs[speaker_id]
+                        speaker_avg = avg_speaker_embs[speaker_id]
                         self.env[idx] = {
                             'data_clean': o,
                             'speaker_emb': speaker_emb[0],
@@ -223,11 +224,12 @@ class SimpleDataset_VCTK(torch.utils.data.Dataset):
         data = self.env[self.index[index + self.offset]]
 
         if self.transforms is not None:
-            data_clean, data_perturbed = self.transforms(data['data_clean'])
+            data_clean, data_perturbed_1, data_perturbed_2 = self.transforms(data['data_clean'])
 
         return {
             'data_clean': data_clean.astype(np.float32),
-            'data_perturbed': data_perturbed.astype(np.float32),
+            'data_perturbed_1': data_perturbed_1.astype(np.float32),
+            'data_perturbed_2': data_perturbed_2.astype(np.float32),
             'speaker_emb': data['speaker_emb'].astype(np.float32),
             'speaker_id': data['speaker_id'],
             'speaker_id_avg': data['speaker_id_avg']

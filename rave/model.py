@@ -895,11 +895,11 @@ class RAVE(pl.LightningModule):
         # --------------------------------------
 
         x_clean = x.unsqueeze(1)
-        x_perturbed = batch['data_perturbed_1'].unsqueeze(1)
+        x_perturbed_1 = batch['data_perturbed_1'].unsqueeze(1)
         x_perturbed_2 = batch['data_perturbed_2'].unsqueeze(1)
         
         if self.pqmf is not None:  # MULTIBAND DECOMPOSITION
-            x_perturbed = self.pqmf(x_perturbed)
+            x_perturbed_1 = self.pqmf(x_perturbed_1)
             x_perturbed_2 = self.pqmf(x_perturbed_2)
             x_clean = self.pqmf(x_clean)
             #excitation = self.pqmf(excitation)
@@ -909,7 +909,7 @@ class RAVE(pl.LightningModule):
             self.encoder.eval()
 
         # ENCODE INPUT
-        z_init_1, kl = self.reparametrize(*self.encoder(x_perturbed))
+        z_init_1, kl = self.reparametrize(*self.encoder(x_perturbed_1))
         p.tick("encode")
         
         with torch.no_grad():
@@ -1088,11 +1088,12 @@ class RAVE(pl.LightningModule):
         # --------------------------------------
 
         x_clean = x.unsqueeze(1)
-        x_perturbed = batch['data_perturbed_1'].unsqueeze(1)
+        x_perturbed_1 = batch['data_perturbed_1'].unsqueeze(1)
+        x_perturbed_2 = batch['data_perturbed_2'].unsqueeze(1)
 
         if self.pqmf is not None:
             x_clean = self.pqmf(x_clean)
-            x_perturbed = self.pqmf(x_perturbed)
+            x_perturbed_1 = self.pqmf(x_perturbed_1)
             #excitation = self.pqmf(excitation)
 
         mean, scale = self.encoder(x_clean)
@@ -1103,7 +1104,7 @@ class RAVE(pl.LightningModule):
 
         if self.pqmf is not None:
             x_clean = self.pqmf.inverse(x_clean)
-            x_perturbed = self.pqmf.inverse(x_perturbed)
+            x_perturbed_1 = self.pqmf.inverse(x_perturbed_1)
             y = self.pqmf.inverse(y)
             #excitation = self.pqmf.inverse(excitation)
 
@@ -1113,7 +1114,7 @@ class RAVE(pl.LightningModule):
         self.log("validation", distance)
         wandb.log({"validation": distance})
 
-        return torch.cat([x_clean, y], -1), mean, torch.cat([x_clean, x_perturbed], -1)
+        return torch.cat([x_clean, y], -1), mean, torch.cat([x_clean, x_perturbed_1, x_perturbed_2], -1)
 
     def validation_epoch_end(self, out):
         audio, z, perturbed = list(zip(*out))

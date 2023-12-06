@@ -132,26 +132,6 @@ if __name__ == "__main__":
         2 * args.N_SIGNAL,
     )(name).astype(np.float16)
 
-    # dataset = SimpleDataset(
-    #     args.SR,
-    #     args.SPEAKER_ENCODER,
-    #     torch.device('cuda'),
-    #     args.PREPROCESSED,
-    #     args.WAV,
-    #     preprocess_function=preprocess,
-    #     split_set="full",
-    #     transforms=Compose([
-    #         lambda x: x.astype(np.float32),
-    #         RandomCrop(args.N_SIGNAL),
-    #         RandomApply(
-    #             lambda x: random_phase_mangle(x, 20, 2000, .99, args.SR),
-    #             p=.8,
-    #         ),
-    #         Dequantize(16),
-    #         lambda x: x.astype(np.float32),
-    #     ]),
-    # )
-
     dataset = SimpleDataset(
         args.SR,
         args.SPEAKER_ENCODER,
@@ -191,7 +171,7 @@ if __name__ == "__main__":
         fig, ax = plt.subplots()
 
         # Create a dictionary to map unique speaker IDs to colors
-        uniue_speakers = list(set(speaker_ID))
+        unique_speakers = list(set(speaker_ID))
         colors = plt.cm.get_cmap('tab10', len(unique_speakers))
         color_dict = {speaker: colors(i) for i, speaker in enumerate(unique_speakers)}
 
