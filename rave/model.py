@@ -12,6 +12,7 @@ from einops import rearrange
 from torch.nn import Conv1d, ConvTranspose1d, AvgPool1d, Conv2d
 from torch.nn.utils import weight_norm, remove_weight_norm, spectral_norm
 import torch.nn.functional as F
+from typing import Tuple
 
 from time import time
 
@@ -21,7 +22,6 @@ from .excitation import ExcitationModule, get_pitch, get_rms_val, upsample
 
 import wandb
 import torchyin
-import transformers
 from transformers import logging
 
 logging.set_verbosity_error()
@@ -679,6 +679,74 @@ class StackDiscriminators(nn.Module):
             features.append(layer(x))
             x = nn.functional.avg_pool1d(x, 2)
         return features
+    
+class ContrastiveLoss(nn.Module):
+    """Contrastive loss.
+
+    Introduced in Kaizhi Qian et al., _Contentvec: An improved self-supervised speech representation by disentangling speakers_
+    """
+    def __init__(
+        self,
+        num_candidates: int,
+        negative_samples_minimum_distance_to_positive: int,
+        temperature: float,
+    ) -> None:
+        super().__init__()
+
+        self.negative_samples_minimum_distance_to_positive = (
+            negative_samples_minimum_distance_to_positive
+        )
+        self.temperature = temperature
+        self.num_candidates = num_candidates
+
+    def make_negative_sampling_mask(
+        self, num_items: int, device: torch.device
+    ) -> torch.Tensor:
+        upper_triu_mask = torch.triu(
+            torch.ones(num_items, num_items),
+            self.negative_samples_minimum_distance_to_positive + 1,
+        )
+        all_mask = upper_triu_mask.T + upper_triu_mask
+        random_values = all_mask * torch.rand(num_items, num_items)
+        k_th_quant = torch.topk(random_values, min(self.num_candidates, num_items))[0][
+            :, -1:
+        ]
+        random_mask = (random_values >= k_th_quant) * all_mask + torch.eye(num_items)
+        return random_mask.to(device)
+
+    def forward(self, x: torch.Tensor, y: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        
+        # [2, B, linguistic_hidden_channels, S], normalize for cosine similarity.
+        cosine_similarity = F.normalize(torch.stack([x, y], dim=0), p=2, dim=2)
+        # N
+        num_tokens = cosine_similarity.shape[-1]
+        # [B, N]
+        positive = cosine_similarity.prod(dim=0).sum(dim=1) / self.temperature
+        positive = positive.exp()
+
+        # [2, B, N, N]
+        confusion_matrix = (torch.matmul(cosine_similarity.transpose(2, 3), cosine_similarity) / self.temperature)
+        # [N, N]
+        negative_sampling_mask = self.make_negative_sampling_mask(num_tokens, x.device)
+
+        # [2, B, N, N(sum = candidates)], negative case
+        masked_confusion_matrix = confusion_matrix.masked_fill(
+            ~negative_sampling_mask.to(torch.bool), -np.inf
+        )
+        # [2, B, N], negative case
+        negative = masked_confusion_matrix.exp().sum(dim=-1)
+        # []
+        contrastive_loss = (
+            -torch.sum(positive / negative, dim=-1).log().sum(dim=0).mean()
+        )
+        
+        mean_positive = positive.mean() * self.temperature
+        mean_negative = (
+            (confusion_matrix * negative_sampling_mask).sum(dim=-1)
+            / self.num_candidates
+        ).mean() * self.temperature
+
+        return contrastive_loss, mean_positive, mean_negative
 
 
 class RAVE(pl.LightningModule):
@@ -783,7 +851,11 @@ class RAVE(pl.LightningModule):
 
         self.block_size = block_size
         self.excitation_module = ExcitationModule(self.sr, self.block_size)
+        
         self.contr_coeff = 1e-5
+        self.contr_loss = ContrastiveLoss(num_candidates=15,
+                                          negative_samples_minimum_distance_to_positive=10,
+                                          temperature=0.1)
 
     def configure_optimizers(self):
         gen_p = list(self.encoder.parameters())
@@ -795,7 +867,7 @@ class RAVE(pl.LightningModule):
 
         return gen_opt, dis_opt
     
-    def contrastive_loss(self, ling_1, ling_2, kappa=0.1, content_adj=10, candidates=15):
+    def contrastive_loss_function(self, ling_1, ling_2, kappa=0.1, content_adj=10, candidates=15):
     
         ling_s = F.normalize(torch.stack([ling_1, ling_2], dim=0), p=2, dim=2)
         num_tokens = ling_s.shape[-1]
@@ -934,9 +1006,9 @@ class RAVE(pl.LightningModule):
         p.tick("mb distance")
         
         if self.warmed_up:
-            contrastrive_loss = 0
+            contrastrive_loss, mean_positive, mean_negative = torch.zeros(3)
         else:
-            contrastrive_loss = self.contrastive_loss(z_init_1, z_init_2)
+            contrastrive_loss, mean_positive, mean_negative = self.contr_loss(z_init_1, z_init_2)
 
         #reverse_z, _ = self.reparametrize(*self.encoder(y))
         #content_loss = torch.nn.L1Loss(z_init, reverse_z)
@@ -1028,6 +1100,8 @@ class RAVE(pl.LightningModule):
         #self.log("content_loss", content_loss)
         p.tick("log")
 
+        print(contrastrive_loss)
+
         wandb.log({
             "loss_dis": loss_dis,
             "loss_gen": loss_gen,
@@ -1035,6 +1109,8 @@ class RAVE(pl.LightningModule):
             "feature_matching": feature_matching_distance,
             "contrastive_loss": contrastrive_loss,
             "contrastive_coeff": self.contr_coeff,
+            "mean_positive": mean_positive,
+            "mean_negative": mean_negative
             #"content_loss": content_loss
         })
         
