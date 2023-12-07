@@ -614,6 +614,8 @@ class Encoder(nn.Module):
                 bias=bias,
                 cumulative_delay=net[-2].cumulative_delay,
             ))
+        
+        net.append(torch.nn.LayerNorm(32))
 
         self.net = cc.CachedSequential(*net)
         self.cumulative_delay = self.net.cumulative_delay
@@ -715,15 +717,14 @@ class ContrastiveLoss(nn.Module):
         return random_mask.to(device)
 
     def forward(self, x: torch.Tensor, y: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        
+
         # [2, B, linguistic_hidden_channels, S], normalize for cosine similarity.
         cosine_similarity = F.normalize(torch.stack([x, y], dim=0), p=2, dim=2)
         # N
         num_tokens = cosine_similarity.shape[-1]
         # [B, N]
         positive = cosine_similarity.prod(dim=0).sum(dim=1) / self.temperature
-        positive = positive.exp()
-
+        #positive = positive.exp()
         # [2, B, N, N]
         confusion_matrix = (torch.matmul(cosine_similarity.transpose(2, 3), cosine_similarity) / self.temperature)
         # [N, N]
@@ -969,6 +970,9 @@ class RAVE(pl.LightningModule):
         x_clean = x.unsqueeze(1)
         x_perturbed_1 = batch['data_perturbed_1'].unsqueeze(1)
         x_perturbed_2 = batch['data_perturbed_2'].unsqueeze(1)
+
+        x_perturbed_1 = x_perturbed_1 / x_perturbed_1.abs().amax(dim=-1, keepdim=True).clamp_min(1e-7)
+        x_perturbed_2 = x_perturbed_2 / x_perturbed_2.abs().amax(dim=-1, keepdim=True).clamp_min(1e-7)
         
         if self.pqmf is not None:  # MULTIBAND DECOMPOSITION
             x_perturbed_1 = self.pqmf(x_perturbed_1)
@@ -1006,7 +1010,9 @@ class RAVE(pl.LightningModule):
         p.tick("mb distance")
         
         if self.warmed_up:
-            contrastrive_loss, mean_positive, mean_negative = torch.zeros(3)
+            contrastrive_loss = 0
+            mean_positive = 0
+            mean_negative = 0
         else:
             contrastrive_loss, mean_positive, mean_negative = self.contr_loss(z_init_1, z_init_2)
 
