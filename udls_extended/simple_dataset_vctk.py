@@ -18,6 +18,15 @@ from .base_dataset import SimpleLMDBDataset
 from .ResNetSE34L import MainModel as ResNetModel
 from .ecapa_tdnn import ECAPA_TDNN
 
+import torchyin
+
+def get_pitch(x, block_size, fs=48000, pitch_min=60):
+    desired_num_frames = x.shape[-1] / block_size
+    tau_max = int(fs / pitch_min)
+    frame_length = 2 * tau_max
+    frame_stride = (x.shape[-1] - frame_length) / (desired_num_frames - 1) / fs
+    return torchyin.estimate(x, sample_rate=fs, pitch_min=pitch_min, pitch_max=800, frame_stride=frame_stride)
+
 def dummy_load(name):
     """
     Preprocess function that takes one audio path and load it into
@@ -153,6 +162,10 @@ class SimpleDataset_VCTK(torch.utils.data.Dataset):
 
         avg_speaker_embs = {}
         resnet_emb_gmms = {}
+        f0_median = {}
+        f0_std = {}
+        f0_median_log = {}
+        f0_std_log = {}
 
         # POPULATE WAV LIST
         if self.folder_list is not None:
@@ -161,8 +174,12 @@ class SimpleDataset_VCTK(torch.utils.data.Dataset):
                 if len(os.listdir(folder)) > 0:
                     for subfolder in os.listdir(folder):
                         if subfolder != '.DS_Store':
+                            
                             wavs = []
                             utt_embeddings = []
+                            all_f0_values = []
+                            all_f0_values_log = []
+
                             speaker_id = subfolder
                             print("Calculating utterance embeddings for", speaker_id)
                             for ext in extension:
@@ -182,12 +199,40 @@ class SimpleDataset_VCTK(torch.utils.data.Dataset):
                                         utt_emb = utt_emb.detach().cpu().squeeze().numpy()
                                         utt_embeddings.append(utt_emb)
 
+                                        #CALCULATE PITCH
+                                        f0, voiced_flag, voiced_probs = li.pyin(
+                                                o,
+                                                fmin=li.note_to_hz('C2'),
+                                                fmax=li.note_to_hz('C5'),
+                                                sr=self.sampling_rate,
+                                                frame_length=1024,
+                                                hop_length=256,
+                                                n_thresholds=5
+                                            )
+
+                                        f0[np.where(voiced_probs < 0.2)] = np.nan
+                                        log_f0 = np.log(f0)
+
+                                        f0 = f0[~np.isnan(f0)]
+                                        log_f0 = log_f0[~np.isnan(log_f0)]
+
+                                        all_f0_values.extend(f0.tolist())
+                                        all_f0_values_log.extend(log_f0.tolist())                     
+
                             utt_embeddings = np.stack(utt_embeddings)
                             gmm_dvector = mixture.GaussianMixture(n_components=1, covariance_type="diag")
                             gmm_dvector.fit(utt_embeddings)
 
                             avg_speaker_embs[speaker_id] = np.mean(utt_embeddings, axis=0)
                             resnet_emb_gmms[speaker_id] = gmm_dvector
+
+                            all_f0_values = np.array(all_f0_values)
+                            all_f0_values_log = np.array(all_f0_values_log)
+
+                            f0_median[speaker_id] = np.median(all_f0_values)
+                            f0_std[speaker_id] = np.std(all_f0_values)
+                            f0_median_log[speaker_id] = np.median(all_f0_values_log)
+                            f0_std_log[speaker_id] = np.std(all_f0_values_log)
 
             wavs = []
 
@@ -212,7 +257,11 @@ class SimpleDataset_VCTK(torch.utils.data.Dataset):
                             'data_clean': o,
                             'speaker_emb': speaker_emb[0],
                             'speaker_id': speaker_id,
-                            'speaker_id_avg': speaker_avg
+                            'speaker_emb_avg': speaker_avg,
+                            'f0_median': f0_median[speaker_id],
+                            'f0_std': f0_std[speaker_id],
+                            'f0_log_median': f0_median_log[speaker_id],
+                            'f0_log_std': f0_std_log[speaker_id]
                         }
 
                         idx += 1
@@ -231,6 +280,10 @@ class SimpleDataset_VCTK(torch.utils.data.Dataset):
             'data_perturbed_1': data_perturbed_1.astype(np.float32),
             'data_perturbed_2': data_perturbed_2.astype(np.float32),
             'speaker_emb': data['speaker_emb'].astype(np.float32),
+            'speaker_emb_avg': data['speaker_emb_avg'].astype(np.float32),
+            'f0_median': data['f0_median'].astype(np.float32),
+            'f0_std': data['f0_std'].astype(np.float32),
+            'f0_log_median': data['f0_log_median'].astype(np.float32),
+            'f0_log_std': data['f0_log_std'].astype(np.float32),
             'speaker_id': data['speaker_id'],
-            'speaker_id_avg': data['speaker_id_avg']
         }

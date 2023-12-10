@@ -67,7 +67,7 @@ if __name__ == "__main__":
         SR = 48000
         N_SIGNAL = 65536
         MAX_STEPS = setting(default=3000000, small=3000000, large=6000000)
-        VAL_EVERY = 10000
+        VAL_EVERY = 10
         BLOCK_SIZE = 128
 
         BATCH = 8
@@ -124,7 +124,11 @@ if __name__ == "__main__":
         'data_perturbed_1': torch.zeros(args.BATCH, 2**16),
         'data_perturbed_2': torch.zeros(args.BATCH, 2**16),
         'speaker_emb': torch.zeros(args.BATCH, speaker_size),
-        'speaker_id_avg': torch.zeros(args.BATCH, speaker_size)}
+        'speaker_emb_avg': torch.zeros(args.BATCH, speaker_size),
+        'f0_median': torch.rand(args.BATCH),
+        'f0_std': torch.rand(args.BATCH),
+        'f0_log_median': torch.rand(args.BATCH),
+        'f0_log_std': torch.rand(args.BATCH),}
     
     model.validation_step(x, 0)
 
@@ -136,7 +140,7 @@ if __name__ == "__main__":
     dataset = SimpleDataset(
         args.SR,
         args.SPEAKER_ENCODER,
-        torch.device('cuda'),
+        torch.device('cpu'),
         args.PREPROCESSED,
         args.WAV,
         preprocess_function=preprocess,
@@ -199,7 +203,7 @@ if __name__ == "__main__":
         generator=torch.Generator().manual_seed(42),
     )
 
-    num_workers = 0 if os.name == "nt" else 10
+    num_workers = 0 if os.name == "nt" else 0
     train = DataLoader(train,
                        args.BATCH,
                        True,
@@ -215,7 +219,9 @@ if __name__ == "__main__":
     print("Input Audio Shape:", clean_example.shape,
           "\nPerturbed Audio Shape:", perturbed_example.shape,
           "\nSpeaker Embedding Shape:", speaker_emb.shape,
-          "\nSpeaker ID Example:", speaker_id)
+          "\nSpeaker ID Example:", speaker_id,
+          "\nMedian (Normal + Log)", example['f0_median'], example['f0_log_median'],
+          "\nStd (Normal + Log)", example['f0_std'], example['f0_log_std'])
     
     # CHECKPOINT CALLBACKS
     validation_checkpoint = pl.callbacks.ModelCheckpoint(
