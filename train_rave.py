@@ -139,7 +139,7 @@ if __name__ == "__main__":
     dataset = SimpleDataset(
         args.SR,
         args.SPEAKER_ENCODER,
-        torch.device('cpu'),
+        torch.device('cuda'),
         args.PREPROCESSED,
         args.WAV,
         preprocess_function=preprocess,
