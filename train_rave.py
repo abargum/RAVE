@@ -67,7 +67,7 @@ if __name__ == "__main__":
         SR = 48000
         N_SIGNAL = 65536
         MAX_STEPS = setting(default=3000000, small=3000000, large=6000000)
-        VAL_EVERY = 10
+        VAL_EVERY = 10000
         BLOCK_SIZE = 128
 
         BATCH = 8
@@ -122,7 +122,6 @@ if __name__ == "__main__":
 
     x = {'data_clean': torch.zeros(args.BATCH, 2**16),
         'data_perturbed_1': torch.zeros(args.BATCH, 2**16),
-        'data_perturbed_2': torch.zeros(args.BATCH, 2**16),
         'speaker_emb': torch.zeros(args.BATCH, speaker_size),
         'speaker_emb_avg': torch.zeros(args.BATCH, speaker_size),
         'f0_median': torch.rand(args.BATCH),
@@ -146,14 +145,14 @@ if __name__ == "__main__":
         preprocess_function=preprocess,
         split_set="full",
         transforms=Perturb([
-            lambda x, x_p_1, x_p_2: (x.astype(np.float32), x_p_1.astype(np.float32), x_p_2.astype(np.float32)),
+            lambda x, x_p_1: (x.astype(np.float32), x_p_1.astype(np.float32)),
             RandomCrop(args.N_SIGNAL),
             RandomApply(
                 lambda x: random_phase_mangle(x, 20, 2000, .99, args.SR),
                 p=.8,
             ),
             Dequantize(16),
-            lambda x, x_p_1, x_p_2: (x.astype(np.float32), x_p_1.astype(np.float32), x_p_2.astype(np.float32)),
+            lambda x, x_p_1: (x.astype(np.float32), x_p_1.astype(np.float32)),
         ],
         args.SR),
     )
@@ -203,7 +202,7 @@ if __name__ == "__main__":
         generator=torch.Generator().manual_seed(42),
     )
 
-    num_workers = 0 if os.name == "nt" else 0
+    num_workers = 0 if os.name == "nt" else 10
     train = DataLoader(train,
                        args.BATCH,
                        True,

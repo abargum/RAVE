@@ -273,12 +273,11 @@ class SimpleDataset_VCTK(torch.utils.data.Dataset):
         data = self.env[self.index[index + self.offset]]
 
         if self.transforms is not None:
-            data_clean, data_perturbed_1, data_perturbed_2 = self.transforms(data['data_clean'])
+            data_clean, data_perturbed_1 = self.transforms(data['data_clean'])
 
         return {
             'data_clean': data_clean.astype(np.float32),
             'data_perturbed_1': data_perturbed_1.astype(np.float32),
-            'data_perturbed_2': data_perturbed_2.astype(np.float32),
             'speaker_emb': data['speaker_emb'].astype(np.float32),
             'speaker_emb_avg': data['speaker_emb_avg'].astype(np.float32),
             'f0_median': data['f0_median'].astype(np.float32),
