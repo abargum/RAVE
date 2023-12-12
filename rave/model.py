@@ -1172,11 +1172,23 @@ class RAVE(pl.LightningModule):
 
         # print(p)
 
-    def encode(self, x, sp, pitch):
+    def encode(self, x, batch, sp, pitch_scalar, seen=True):
+        
+        if seen:
+            median = torch.tensor(batch['f0_median']).to(x)
+            std = torch.tensor(batch['f0_std']).to(x)
+        else:
+            median = torch.median(x)
+            std = torch.std(x)
         
         # SPEAKER EMBEDDING AND PITCH EXCITATION
-        sp = self.speaker_projection(sp)
-        sp = torch.permute(sp.unsqueeze(1).repeat(1, 32, 1), (0, 2, 1))
+        sp = self.speaker_projection(sp).unsqueeze(1)
+
+        pitch = get_pitch(x, self.block_size)
+        pitch_norm = (((pitch - median.unsqueeze(-1)) /std.unsqueeze(-1)) / 4.0) 
+        pitch_embedding = self.pitch_encoder(pitch_norm.unsqueeze(1), sp) * pitch_scalar
+
+        sp = torch.permute(sp.repeat(1, 32, 1), (0, 2, 1))
 
         x = x.unsqueeze(1)
         
@@ -1186,7 +1198,7 @@ class RAVE(pl.LightningModule):
         mean, scale = self.encoder(x)
         z, _ = self.reparametrize(mean, scale)
         
-        return z, torch.cat((z, sp), 1) #, excitation
+        return z, torch.cat((z, sp, pitch_embedding), 1)
 
     def decode(self, z):
         y = self.decoder(z, add_noise=True)

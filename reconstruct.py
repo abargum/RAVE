@@ -59,7 +59,7 @@ dataset = SimpleDataset(
         48000,
         "RESNET",
         torch.device('cuda'),
-        "data/vctk-full/rave",
+        "data/test-pitch/rave",
         "wav48_silence_trimmed",
         preprocess_function=preprocess,
         split_set="full",
@@ -73,13 +73,16 @@ dataset = SimpleDataset(
 #    print(i, dataset[i]['speaker_id'])
 
 in_index = 3
-target_index = 16
-    
+target_index = 9
+seen = True
+pitch = 1.0
+
 in_sig = dataset[in_index]['data_clean']
 print("In ID:", dataset[in_index]['speaker_id'], "out ID:", dataset[target_index]['speaker_id'])
+print("Out ID:", dataset[target_index]['speaker_emb_avg'].shape)
 
 target = dataset[target_index]['data_clean']
-embedding = torch.tensor(dataset[target_index]['speaker_emb']).unsqueeze(0).to(device)
+embedding = torch.tensor(dataset[target_index]['speaker_emb_avg']).unsqueeze(0).to(device)
 
 # LOAD RAVE
 rave = RAVE.load_from_checkpoint(
@@ -89,7 +92,7 @@ rave = RAVE.load_from_checkpoint(
 
 # COMPUTE LATENT COMPRESSION RATIO
 x = torch.randn(1, 2**16).to(device)
-z, z_cat, ex = rave.encode(x, embedding, 1.0)
+z, z_cat = rave.encode(x, dataset[in_index], embedding, pitch, seen)
 ratio = x.shape[-1] // z.shape[-1]
 
 # SEARCH FOR WAV FILES
@@ -110,16 +113,16 @@ for audio in audios:
     n_sample = x.shape[-1]
     pad = (ratio - (n_sample % ratio)) % ratio
     x = torch.nn.functional.pad(x, (0, pad))
-    x = x[:, 55000:(55000+65536)]
+    x = x[:, :65536]
 
     #embed = torch.zeros(embedding.shape).to(device)
 
     # ENCODE / DECODE
-    z, z_cat, ex = rave.encode(x, embedding, 1.0)
-    y = rave.decode(z_cat, ex)
+    z, z_cat = rave.encode(x, dataset[in_index], embedding, pitch, seen)
+    y = rave.decode(z_cat)
     y = y.reshape(-1).cpu().numpy()[:n_sample]
 
-# WRITE AUDIO
-sf.write(path.join(args.OUT, "reconstruction.wav"), y, 48000)
-sf.write(path.join(args.OUT, "input.wav"), x.reshape(-1).cpu().numpy(), 48000)
-sf.write(path.join(args.OUT, "target.wav"), target, 48000)
+    # WRITE AUDIO
+    sf.write(path.join(args.OUT, f"reconstruction_{audio_name}.wav"), y, 48000)
+    sf.write(path.join(args.OUT, f"input_{audio_name}.wav"), x.reshape(-1).cpu().numpy(), 48000)
+    sf.write(path.join(args.OUT, "target.wav"), target, 48000)
