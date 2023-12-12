@@ -1122,23 +1122,16 @@ class RAVE(pl.LightningModule):
 
         # print(p)
 
-    def encode(self, x, sp, pitch):
-        
+    def encode(self, x, sp):
+
         # SPEAKER EMBEDDING AND PITCH EXCITATION
         sp = self.speaker_projection(sp)
         sp = torch.permute(sp.unsqueeze(1).repeat(1, 32, 1), (0, 2, 1))
-
-        #pitch = get_pitch(x, self.block_size).unsqueeze(-1) * pitch
-        #pitch = upsample(pitch, self.block_size)
-        #excitation, phase = self.excitation_module(pitch)
-        #rms_val = get_rms_val(x, excitation, self.block_size)
         
-        #excitation = (excitation * rms_val).unsqueeze(1)
         x = x.unsqueeze(1)
         
         if self.pqmf is not None:
             x = self.pqmf(x)
-            #excitation = self.pqmf(excitation)
 
         mean, scale = self.encoder(x)
         z, _ = self.reparametrize(mean, scale)
