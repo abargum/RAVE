@@ -893,7 +893,7 @@ class RAVE(pl.LightningModule):
     
     def update_warmup(self):
         self.contr_coeff = min(
-            self.contr_coeff + 1e-5, 10)
+            self.contr_coeff + 1e-5, 1)
 
     def lin_distance(self, x, y):
         return torch.norm(x - y) / torch.norm(x)
