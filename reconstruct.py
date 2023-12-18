@@ -75,7 +75,7 @@ dataset = SimpleDataset(
 in_index = 3
 target_index = 9
 seen = True
-pitches = [0.5, 1.0, 4.0]
+pitches = [-4.0, 1.0, 4.0]
 
 in_sig = dataset[in_index]['data_clean']
 print("In ID:", dataset[in_index]['speaker_id'], "out ID:", dataset[target_index]['speaker_id'])
