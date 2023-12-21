@@ -10,6 +10,7 @@ import librosa as li
 import numpy as np
 import torch
 import os
+import glob
 from sklearn import mixture
 from scipy.io.wavfile import read as read_wav_file
 from tqdm import tqdm
@@ -168,26 +169,34 @@ class SimpleDataset_VCTK(torch.utils.data.Dataset):
                             for ext in extension:
                                 wavs.extend(list(Path(folder, speaker_id).rglob(ext)))
 
-                            # CALCULATE UTTERANCE EMBEDDINGS
-                            loader = tqdm(wavs)
-                            for wav in loader:
-                                loader.set_description("{}".format(path.basename(wav)))
-                                output = self.preprocess_function(wav)
-                                if output is not None:
-                                    for o in output:
-                                        if self.speaker_model == "RESNET":
-                                            utt_emb = self.speaker_encoder(torch.tensor(o, dtype=torch.float32).unsqueeze(0).to(torch.device(self.device)))
-                                        else:
-                                            utt_emb = self.speaker_encoder(torch.tensor(o, dtype=torch.float32).unsqueeze(0).to(torch.device(self.device)), aug=False)
-                                        utt_emb = utt_emb.detach().cpu().squeeze().numpy()
-                                        utt_embeddings.append(utt_emb)
+                            if len(wavs) >= 15:
+                                # CALCULATE UTTERANCE EMBEDDINGS
+                                loader = tqdm(wavs)
+                                for wav in loader:
+                                    loader.set_description("{}".format(path.basename(wav)))
+                                    output = self.preprocess_function(wav)
+                                    if output is not None:
+                                        for o in output:
+                                            if self.speaker_model == "RESNET":
+                                                utt_emb = self.speaker_encoder(torch.tensor(o, dtype=torch.float32).unsqueeze(0).to(torch.device(self.device)))
+                                            else:
+                                                utt_emb = self.speaker_encoder(torch.tensor(o, dtype=torch.float32).unsqueeze(0).to(torch.device(self.device)), aug=False)
+                                            utt_emb = utt_emb.detach().cpu().squeeze().numpy()
+                                            utt_embeddings.append(utt_emb)
 
-                            utt_embeddings = np.stack(utt_embeddings)
-                            gmm_dvector = mixture.GaussianMixture(n_components=1, covariance_type="diag")
-                            gmm_dvector.fit(utt_embeddings)
+                                utt_embeddings = np.stack(utt_embeddings)
+                                gmm_dvector = mixture.GaussianMixture(n_components=1, covariance_type="diag")
+                                gmm_dvector.fit(utt_embeddings)
 
-                            avg_speaker_embs[speaker_id] = np.mean(utt_embeddings, axis=0)
-                            resnet_emb_gmms[speaker_id] = gmm_dvector
+                                avg_speaker_embs[speaker_id] = np.mean(utt_embeddings, axis=0)
+                                resnet_emb_gmms[speaker_id] = gmm_dvector
+
+                            else:
+                                print("FOLDER NOT BIG ENOUGH:", Path(folder, speaker_id))
+                                files = glob.glob(os.path.join(folder, speaker_id, '*'))
+                                for f in files:
+                                    os.remove(f)
+                                os.rmdir(Path(folder, speaker_id))
 
             wavs = []
 
