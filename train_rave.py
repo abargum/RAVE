@@ -8,6 +8,7 @@ from rave.core import search_for_run
 #from udls import SimpleDataset, simple_audio_preprocess
 import sys
 import wandb
+from sklearn.manifold import TSNE
 
 sys.path.insert(1, '../udls_extended/')
 
@@ -21,6 +22,7 @@ import os
 import numpy as np
 
 import GPUtil as gpu
+from udls_extended.ResNetSE34L import MainModel as ResNetModel
 
 from sklearn.decomposition import PCA
 import matplotlib.pyplot as plt
@@ -32,7 +34,7 @@ if __name__ == "__main__":
         groups = ["small", "large"]
 
         DATA_SIZE = 16
-        CAPACITY = setting(default=64, small=32, large=64)
+        CAPACITY = setting(default=32, small=32, large=64)
         LATENT_SIZE = 64
         BIAS = True
         NO_LATENCY = False
@@ -76,7 +78,7 @@ if __name__ == "__main__":
 
         NAME = None
         
-        PLOT = False
+        PLOT = True
 
     args.parse_args()
 
@@ -155,17 +157,41 @@ if __name__ == "__main__":
     )
     
     # -------------- PLOT SPEAKER EMBEDDINGS ----------------
+    def load_resnet_encoder(checkpoint_path, device):
+        model = ResNetModel(512).eval().to(device)
+        checkpoint = torch.load(checkpoint_path, map_location=device)
+        print("loading speaker encoder")
+
+        new_state_dict = {}
+        for k, v in checkpoint.items():
+            try:
+                new_state_dict[k[6:]] = checkpoint[k]
+            except KeyError:
+                new_state_dict[k] = v
+
+        model.load_state_dict(new_state_dict)
+        return model
+    
     if args.PLOT:
+        
+        speaker_encoder = load_resnet_encoder("speaker_embedding/resnet34sel_pretrained.pt", torch.device("cuda:1"))
+        
         speaker_E = []
         speaker_ID = []
 
         for i, entry in enumerate(dataset):
-            if i < 250:
-                speaker_E.append(entry['speaker_emb'])
+            if i < 1000:
+                embed = model.embed(entry['data_clean'])
+                embed = speaker_encoder(torch.tensor(entry['data_clean'], dtype=torch.float32).unsqueeze(0).to(torch.device("cuda:1")))
+                #speaker_E.append(embed[0].detach().cpu().numpy())
+                #embed = entry['speaker_emb']
+                speaker_E.append(embed)
                 speaker_ID.append(entry['speaker_id'])
+                if i % 100 == 0:
+                    print(i)
             else:
                 break
-
+                
         pca = PCA(n_components=2)
         components = pca.fit_transform(np.array(speaker_E))
 
@@ -173,7 +199,7 @@ if __name__ == "__main__":
 
         # Create a dictionary to map unique speaker IDs to colors
         unique_speakers = list(set(speaker_ID))
-        colors = plt.cm.get_cmap('tab10', len(unique_speakers))
+        colors = plt.cm.get_cmap('tab20', len(unique_speakers))
         color_dict = {speaker: colors(i) for i, speaker in enumerate(unique_speakers)}
 
         # Scatter plot with different colors for each speaker ID
@@ -187,11 +213,30 @@ if __name__ == "__main__":
         plt.xlabel('Principal Component 1')
         plt.ylabel('Principal Component 2')
 
-        plt.savefig('scatter_plot_embeddings.png', bbox_inches='tight')
+        plt.savefig('pca-rave-orig.png', bbox_inches='tight')
+
+        tsne = TSNE(n_components=2, random_state=42)
+        components_tsne = tsne.fit_transform(np.array(speaker_E))
+        
+        # Create a scatter plot with different colors for each speaker ID
+        fig, ax = plt.subplots()
+
+        # Scatter plot with different colors for each speaker ID
+        for i, speaker in enumerate(unique_speakers):
+            indices = [j for j, s in enumerate(speaker_ID) if s == speaker]
+            ax.scatter(components_tsne[indices, 0], components_tsne[indices, 1], label=speaker, color=color_dict[speaker])
+
+        # Display a legend outside the plot
+        ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+
+        plt.xlabel('Principal Component 1')
+        plt.ylabel('Principal Component 2')
+
+        plt.savefig('tsne-rave-orig.png', bbox_inches='tight')
             
         # ---------------------------------------------------
 
-    val = max((2 * len(dataset)) // 100, 1)
+    val = max((2 * len(dataset)) // 500, 1)
     train = len(dataset) - val
     train, val = random_split(
         dataset,

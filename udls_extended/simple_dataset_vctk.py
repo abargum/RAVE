@@ -43,6 +43,9 @@ def simple_audio_preprocess(sampling_rate, N):
         except Exception as e:
             print(e)
             return None
+        
+        val = int(np.ceil((len(x) / 65536)))
+        N = 65536 * val
 
         pad = (N - (len(x) % N)) % N
         x = np.pad(x, (0, pad))
@@ -211,6 +214,7 @@ class SimpleDataset_VCTK(torch.utils.data.Dataset):
             loader = tqdm(wavs)
             for wav in loader:
                 speaker_id = str(wav).split("/")[1]
+                wav_path = (str(wav).replace(str(wav).split("/")[0], "")[1:]).replace(str(wav).split("_")[-1], "")[:-1]
                 loader.set_description("{}".format(path.basename(wav)))
                 output = self.preprocess_function(wav)
                 if output is not None:
@@ -221,7 +225,8 @@ class SimpleDataset_VCTK(torch.utils.data.Dataset):
                             'data_clean': o,
                             'speaker_emb': speaker_emb[0],
                             'speaker_id': speaker_id,
-                            'speaker_id_avg': speaker_avg
+                            'speaker_id_avg': speaker_avg,
+                            'file_name': wav_path
                         }
 
                         idx += 1
@@ -241,5 +246,6 @@ class SimpleDataset_VCTK(torch.utils.data.Dataset):
             'data_perturbed_2': data_perturbed_2.astype(np.float32),
             'speaker_emb': data['speaker_emb'].astype(np.float32),
             'speaker_id': data['speaker_id'],
-            'speaker_id_avg': data['speaker_id_avg']
+            'speaker_id_avg': data['speaker_id_avg'],
+            'file_name': data['file_name']
         }

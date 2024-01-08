@@ -59,8 +59,8 @@ dataset = SimpleDataset(
         48000,
         "RESNET",
         torch.device('cuda'),
-        "data/test/rave",
-        "wav48_silence_trimmed",
+        "data/dansk/rave",
+        "daaa",
         preprocess_function=preprocess,
         split_set="full",
         transforms=Perturb([
@@ -73,7 +73,7 @@ dataset = SimpleDataset(
 #    print(i, dataset[i]['speaker_id'])
 
 in_index = 3
-target_index = 9
+target_index = 8
     
 in_sig = dataset[in_index]['data_clean']
 print("In ID:", dataset[in_index]['speaker_id'], "out ID:", dataset[target_index]['speaker_id'])

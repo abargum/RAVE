@@ -667,7 +667,102 @@ class Discriminator(nn.Module):
             if isinstance(layer, nn.Conv1d):
                 feature.append(x)
         return feature
+    
+class SpeakerEncoder(nn.Module):
+    def __init__(self,
+                 data_size,
+                 capacity,
+                 latent_size,
+                 ratios,
+                 padding_mode,
+                 bias=False):
+        super().__init__()
+        net = [
+            cc.Conv1d(data_size,
+                      capacity,
+                      7,
+                      padding=cc.get_padding(7, mode=padding_mode),
+                      bias=bias)
+        ]
 
+        for i, r in enumerate(ratios):
+            in_dim = 2**i * capacity
+            out_dim = 2**(i + 1) * capacity
+
+            net.append(nn.BatchNorm1d(in_dim))
+            net.append(nn.LeakyReLU(.2))
+            net.append(
+                cc.Conv1d(
+                    in_dim,
+                    out_dim,
+                    2 * r + 1,
+                    padding=cc.get_padding(2 * r + 1, r, mode=padding_mode),
+                    stride=r,
+                    bias=bias,
+                    cumulative_delay=net[-3].cumulative_delay,
+                ))
+
+        net.append(nn.LeakyReLU(.2))
+        net.append(
+            cc.Conv1d(
+                out_dim,
+                #2 * latent_size,
+                latent_size,
+                5,
+                padding=cc.get_padding(5, mode=padding_mode),
+                groups=2,
+                bias=bias,
+                cumulative_delay=net[-2].cumulative_delay,
+            ))
+
+        self.net = cc.CachedSequential(*net)
+        self.cumulative_delay = self.net.cumulative_delay
+
+    def forward(self, x):
+        z = self.net(x)
+        return z
+    
+    
+class RaveEncoder(nn.Module):
+    def __init__(self, data_size, capacity, encoder_out_size, ratios, no_latency, bias):
+        super(RaveEncoder, self).__init__()
+        
+        self.encoder = SpeakerEncoder(
+                data_size,
+                capacity,
+                encoder_out_size,
+                ratios,
+                "causal" if no_latency else "centered",
+                bias,
+            )
+
+        self.pqmf = PQMF(70 if no_latency else 100, data_size)
+        self.cropped_latent_size = 0
+        
+        self.sap_linear = nn.Linear(encoder_out_size, encoder_out_size)
+        self.attention = self.new_parameter(encoder_out_size, 1)
+        self.fc = nn.Linear(encoder_out_size, 256)
+    
+    def forward(self, x):
+        
+        x = x.unsqueeze(1)
+        x = self.pqmf(x)
+        z = self.encoder(x)
+        
+        z = torch.permute(z, (0, 2, 1))
+        h = torch.tanh(self.sap_linear(z))
+        w = torch.matmul(h, self.attention).squeeze(dim=2)
+        w = F.softmax(w, dim=1).view(z.size(0), z.size(1), 1)
+        z = torch.sum(z * w, dim=1)
+        
+        z = self.fc(z)
+        
+        return z
+    
+    def new_parameter(self, *size):
+        out = nn.Parameter(torch.FloatTensor(*size))
+        nn.init.xavier_normal_(out)
+        return out
 
 class StackDiscriminators(nn.Module):
     def __init__(self, n_dis, *args, **kwargs):
@@ -738,7 +833,7 @@ class ContrastiveLoss(nn.Module):
         negative = masked_confusion_matrix.exp().sum(dim=-1)
         # []
         contrastive_loss = (
-            -torch.sum(positive / negative, dim=-1).log().sum(dim=0).mean()
+            -torch.sum(positive / negative, dim=2).log().sum(dim=0).mean()
         )
         
         mean_positive = positive.mean() * self.temperature
@@ -746,6 +841,9 @@ class ContrastiveLoss(nn.Module):
             (confusion_matrix * negative_sampling_mask).sum(dim=-1)
             / self.num_candidates
         ).mean() * self.temperature
+        
+        if torch.isnan(contrastive_loss):
+            print("cosine_similarity:", cosine_similarity, "/npositive:", positive, "confusion_matrix:", confusion_matrix, "negative_sampling_mask:", negative_sampling_mask, "masked_confusion_matrix:", masked_confusion_matrix, "negative:", negative)
 
         return contrastive_loss, mean_positive, mean_negative
 
@@ -803,7 +901,15 @@ class RAVE(pl.LightningModule):
         else:
             speaker_size = 0
             
-        self.speaker_projection = torch.nn.Linear(speaker_size, 256)
+        #self.speaker_projection = torch.nn.Linear(speaker_size, 256)
+        
+        self.speaker_encoder = RaveEncoder(data_size=16, capacity=32, encoder_out_size=128, ratios=[4, 4, 2, 2], no_latency=False, bias=True)
+       
+        pretrained_model_state_dict = torch.load("speaker_embedding/model000000500.model")
+        
+        pretrained_model_state_dict = self.remove_prefix(pretrained_model_state_dict)
+        self.speaker_encoder.load_state_dict(pretrained_model_state_dict)
+        self.speaker_encoder.eval()
 
         new_latent_size = latent_size + 256
         self.decoder = Generator_Old(
@@ -858,6 +964,19 @@ class RAVE(pl.LightningModule):
                                           negative_samples_minimum_distance_to_positive=10,
                                           temperature=0.1)
 
+    
+    def remove_prefix(self, state_dict):
+        new_state_dict = {}
+        for key, value in state_dict.items():
+            if key.startswith("__S__."):
+                new_key = key[len("__S__."):]
+                new_state_dict[new_key] = value
+            elif key.startswith("__L__."):
+                print("L")
+            else:
+                new_state_dict[key] = value
+        return new_state_dict
+    
     def configure_optimizers(self):
         gen_p = list(self.encoder.parameters())
         gen_p += list(self.decoder.parameters())
@@ -871,8 +990,10 @@ class RAVE(pl.LightningModule):
     def contrastive_loss_function(self, ling_1, ling_2, kappa=0.1, content_adj=10, candidates=15):
     
         ling_s = F.normalize(torch.stack([ling_1, ling_2], dim=0), p=2, dim=2)
+    
         num_tokens = ling_s.shape[-1]
         pos = ling_s.prod(dim=0).sum(dim=1) / kappa
+
         confusion = torch.matmul(ling_s.transpose(2, 3), ling_s) / kappa
 
         placeholder = torch.zeros(num_tokens, device=self.device)
@@ -893,7 +1014,7 @@ class RAVE(pl.LightningModule):
     
     def update_warmup(self):
         self.contr_coeff = min(
-            self.contr_coeff + 1e-5, 1)
+            self.contr_coeff + 1e-5, 10)
 
     def lin_distance(self, x, y):
         return torch.norm(x - y) / torch.norm(x)
@@ -956,9 +1077,13 @@ class RAVE(pl.LightningModule):
         x = batch['data_clean']
 
         # SPEAKER EMBEDDING AND PITCH EXCITATION
-        sp = batch['speaker_emb']
-        sp = self.speaker_projection(sp)
-        sp = torch.permute(sp.unsqueeze(1).repeat(1, 32, 1), (0, 2, 1))
+        #sp = batch['speaker_emb']
+        #sp = self.speaker_projection(sp)
+        #sp = torch.permute(sp.unsqueeze(1).repeat(1, 32, 1), (0, 2, 1))
+        
+        with torch.no_grad():
+            sp = self.speaker_encoder(x)
+            sp = torch.permute(sp.unsqueeze(1).repeat(1, 32, 1), (0, 2, 1))
 
         #pitch = get_pitch(x, self.block_size).unsqueeze(-1)
         #pitch = upsample(pitch, self.block_size)
@@ -1121,12 +1246,17 @@ class RAVE(pl.LightningModule):
         self.update_warmup()
 
         # print(p)
+    def embed(self, x):    
+        with torch.no_grad():
+            sp = self.speaker_encoder(torch.tensor(x).unsqueeze(0))
+        return sp
 
-    def encode(self, x, sp):
+    def encode(self, x):
 
         # SPEAKER EMBEDDING AND PITCH EXCITATION
-        sp = self.speaker_projection(sp)
-        sp = torch.permute(sp.unsqueeze(1).repeat(1, 32, 1), (0, 2, 1))
+        with torch.no_grad():
+            sp = self.speaker_encoder(x)
+            sp = torch.permute(sp.unsqueeze(1).repeat(1, 32, 1), (0, 2, 1))
         
         x = x.unsqueeze(1)
         
@@ -1149,9 +1279,13 @@ class RAVE(pl.LightningModule):
         x = batch['data_clean']
 
         # SPEAKER EMBEDDING AND PITCH EXCITATION
-        sp = batch['speaker_emb']
-        sp = self.speaker_projection(sp)
-        sp = torch.permute(sp.unsqueeze(1).repeat(1, 32, 1), (0, 2, 1))
+        #sp = batch['speaker_emb']
+        #sp = self.speaker_projection(sp)
+        #sp = torch.permute(sp.unsqueeze(1).repeat(1, 32, 1), (0, 2, 1))
+        
+        with torch.no_grad():
+            sp = self.speaker_encoder(x)
+            sp = torch.permute(sp.unsqueeze(1).repeat(1, 32, 1), (0, 2, 1))
 
         #pitch = get_pitch(x, self.block_size).unsqueeze(-1)
         #pitch = upsample(pitch, self.block_size)
@@ -1189,9 +1323,12 @@ class RAVE(pl.LightningModule):
 
 
         #FOR CONVERSION
-        speaker_emb_avg = batch['speaker_id_avg']
-        speaker_emb_avg = self.speaker_projection(speaker_emb_avg)
-        speaker_emb_avg = torch.permute(speaker_emb_avg.unsqueeze(1).repeat(1, 32, 1), (0, 2, 1))
+        #speaker_emb_avg = batch['speaker_id_avg']
+        #speaker_emb_avg = self.speaker_projection(speaker_emb_avg)
+        #speaker_emb_avg = torch.permute(speaker_emb_avg.unsqueeze(1).repeat(1, 32, 1), (0, 2, 1))
+        
+        with torch.no_grad():
+            speaker_emb_avg = self.speaker_encoder(x)
 
         input_index = 0
         target_index = 1
@@ -1199,6 +1336,7 @@ class RAVE(pl.LightningModule):
         input_conversion = x[input_index].unsqueeze(0).unsqueeze(0)
         target_conversion = x[target_index].unsqueeze(0).unsqueeze(0)
         target_embedding = speaker_emb_avg[target_index].unsqueeze(0)
+        target_embedding = torch.permute(target_embedding.unsqueeze(1).repeat(1, 32, 1), (0, 2, 1))
 
         if self.pqmf is not None:
             input_conversion = self.pqmf(input_conversion)
@@ -1247,10 +1385,7 @@ class RAVE(pl.LightningModule):
                 self.log(f"{p}%_manifold",
                          np.argmax(var > p).astype(np.float32))
 
-        y = torch.cat(audio, 0)[:64].reshape(-1)
-        self.logger.experiment.add_audio("audio_val", y,
-                                         self.saved_step.item(), self.sr)
-
+        y = torch.cat(audio, 0)[:16].reshape(-1)
         wandb.log({
             f"audio_val_{self.saved_step.item():06d}":
             wandb.Audio(y.detach().cpu().numpy(),
@@ -1258,18 +1393,7 @@ class RAVE(pl.LightningModule):
                         sample_rate=self.sr)
         })
 
-        x_per = torch.cat(perturbed, 0)[:64].reshape(-1)
-        self.logger.experiment.add_audio("audio_per", x_per,
-                                         self.saved_step.item(), self.sr)
-
-        wandb.log({
-            f"audio_per{self.saved_step.item():06d}":
-            wandb.Audio(x_per.detach().cpu().numpy(),
-                        caption="audio",
-                        sample_rate=self.sr)
-        })
-
-        convert = torch.cat(converted, 0)[:64].reshape(-1)
+        convert = torch.cat(converted, 0)[:16].reshape(-1)
         wandb.log({
             f"audio_conv{self.saved_step.item():06d}":
             wandb.Audio(convert.detach().cpu().numpy(),
