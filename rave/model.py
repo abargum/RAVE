@@ -769,6 +769,8 @@ class RAVE(pl.LightningModule):
                  mode,
                  block_size,
                  speaker_encoder,
+                 contrastive_loss,
+                 content_loss,
                  no_latency=False,
                  min_kl=1e-4,
                  max_kl=5e-1,
@@ -857,6 +859,9 @@ class RAVE(pl.LightningModule):
         self.contr_loss = ContrastiveLoss(num_candidates=15,
                                           negative_samples_minimum_distance_to_positive=10,
                                           temperature=0.1)
+        
+        self.contrastive = contrastive_loss
+        self.content = content_loss
 
     def configure_optimizers(self):
         gen_p = list(self.encoder.parameters())
@@ -893,7 +898,7 @@ class RAVE(pl.LightningModule):
     
     def update_warmup(self):
         self.contr_coeff = min(
-            self.contr_coeff + 1e-5, 1)
+            self.contr_coeff + 1e-5, 10)
 
     def lin_distance(self, x, y):
         return torch.norm(x - y) / torch.norm(x)
@@ -1004,17 +1009,29 @@ class RAVE(pl.LightningModule):
         # DECODE LATENT
         y = self.decoder(z, add_noise=self.warmed_up)
         p.tick("decode")
+        
+        # CONTENT OF RECONSTRUCTED (Y)
+        with torch.no_grad():
+            y_enc, _ = self.reparametrize(*self.encoder(y))
+           
+        if self.content:
+            content_loss = torch.nn.functional.l1_loss(z_init_1, y_enc) * 7.5
+        else:
+            content_loss = 0
 
         # DISTANCE BETWEEN INPUT AND OUTPUT
         distance = self.distance(x_clean, y)
         p.tick("mb distance")
         
-        if self.warmed_up:
-            contrastrive_loss = 0
-            mean_positive = 0
-            mean_negative = 0
+        if self.contrastive:
+            if self.warmed_up:
+                contrastrive_loss = 0
+                mean_positive = 0
+                mean_negative = 0
+            else:
+                contrastrive_loss, mean_positive, mean_negative = self.contr_loss(z_init_1, z_init_2)
         else:
-            contrastrive_loss, mean_positive, mean_negative = self.contr_loss(z_init_1, z_init_2)
+            contrastrive_loss = 0
 
         #reverse_z, _ = self.reparametrize(*self.encoder(y))
         #content_loss = torch.nn.L1Loss(z_init, reverse_z)
@@ -1077,7 +1094,7 @@ class RAVE(pl.LightningModule):
             min_beta=self.min_kl,
             max_beta=self.max_kl,
         )
-        loss_gen = distance + loss_adv + beta * kl + contrastrive_loss * self.contr_coeff
+        loss_gen = distance + loss_adv + beta * kl + contrastrive_loss * self.contr_coeff + content_loss
         if self.feature_match:
             loss_gen = loss_gen + feature_matching_distance
         p.tick("gen loss compose")
@@ -1114,7 +1131,8 @@ class RAVE(pl.LightningModule):
             "contrastive_loss": contrastrive_loss,
             "contrastive_coeff": self.contr_coeff,
             "mean_positive": mean_positive,
-            "mean_negative": mean_negative
+            "mean_negative": mean_negative,
+            "content": content_loss
             #"content_loss": content_loss
         })
         

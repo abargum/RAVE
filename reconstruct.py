@@ -31,7 +31,6 @@ class args(Config):
     WAV_FOLDER = None  # PATH TO YOUR WAV FOLDER
     OUT = "./reconstruction/"
 
-
 args.parse_args()
 
 # GPU DISCOVERY
@@ -49,7 +48,6 @@ else:
 
 device = torch.device("cuda:0" if use_gpu else "cpu")
 
-# LOAD TRAINING DATA FOR EMBEDDINGS
 preprocess = lambda name: simple_audio_preprocess(
         48000,
         2 * 65536,
@@ -73,7 +71,7 @@ dataset = SimpleDataset(
 #    print(i, dataset[i]['speaker_id'])
 
 in_index = 3
-target_index = 9
+target_index = 3
     
 in_sig = dataset[in_index]['data_clean']
 print("In ID:", dataset[in_index]['speaker_id'], "out ID:", dataset[target_index]['speaker_id'])
@@ -105,18 +103,27 @@ for audio in audios:
     # LOAD AUDIO TO TENSOR
     x, sr = li.load(audio, sr=rave.sr)
     #x = in_sig
-    x = torch.from_numpy(x).reshape(1, -1).float().to(device)
+    #x = torch.from_numpy(x).reshape(1, -1).float().to(device)
 
     # PAD AUDIO
-    n_sample = x.shape[-1]
-    pad = (ratio - (n_sample % ratio)) % ratio
-    x = torch.nn.functional.pad(x, (0, pad))
-    x = x[:, 0:65536]
+    #n_sample = x.shape[-1]
+    #pad = (ratio - (n_sample % ratio)) % ratio
+    
+    
+    val = int(np.ceil((len(x) / 65536)))
+    N = 65536 * val
+    pad = (N - (len(x) % N)) % N
+    x = np.pad(x, (0, pad))
+    x = torch.tensor(x.reshape(val, -1)).to(device)
+    print(x.shape, N)
+    
+    #x = torch.nn.functional.pad(x, (0, pad))
+    #x = x[:, 0:65536]
 
     # ENCODE / DECODE
-    z, z_cat = rave.encode(x, embedding)
+    z, z_cat = rave.encode(x, embedding.repeat(x.shape[0], 1))
     y = rave.decode(z_cat)
-    y = y.reshape(-1).cpu().numpy()[:n_sample]
+    y = y.reshape(-1).cpu().numpy()
 
     # WRITE AUDIO
     sf.write(path.join(args.OUT, f"reconstruction_{audio_name}.wav"), y, 48000)
