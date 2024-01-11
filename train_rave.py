@@ -33,7 +33,7 @@ if __name__ == "__main__":
 
         DATA_SIZE = 16
         CAPACITY = setting(default=64, small=32, large=64)
-        LATENT_SIZE = 64
+        LATENT_SIZE = 136
         BIAS = True
         NO_LATENCY = False
         RATIOS = setting(
@@ -73,7 +73,7 @@ if __name__ == "__main__":
         BATCH = 8
 
         SPEAKER_ENCODER = 'RESNET'
-        CONTRASTIVE_LOSS = True
+        CONTRASTIVE_LOSS = False
         CONTENT_LOSS = True
 
         NAME = None

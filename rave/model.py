@@ -682,6 +682,21 @@ class StackDiscriminators(nn.Module):
             x = nn.functional.avg_pool1d(x, 2)
         return features
     
+
+class CrossEntropyProjection(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.layer_norm = torch.nn.LayerNorm(32)
+        self.logistic_projection = torch.nn.Linear(32, 100)
+        self.softmax = torch.nn.Softmax()
+        
+    def forward(self, x):
+        z_for_CE = self.layer_norm(x)
+        z_for_CE = self.logistic_projection(z_for_CE)
+        z_for_CE = self.softmax(z_for_CE)
+        return z_for_CE
+        
+    
 class ContrastiveLoss(nn.Module):
     """Contrastive loss.
 
@@ -797,6 +812,8 @@ class RAVE(pl.LightningModule):
             "causal" if no_latency else "centered",
             bias,
         )
+        
+        self.CE_projection = CrossEntropyProjection()
 
         if speaker_encoder == "RESNET":
             speaker_size = 512
@@ -864,8 +881,10 @@ class RAVE(pl.LightningModule):
         self.content = content_loss
 
     def configure_optimizers(self):
+        
         gen_p = list(self.encoder.parameters())
         gen_p += list(self.decoder.parameters())
+        gen_p += list(self.CE_projection.parameters())
         dis_p = list(self.discriminator.parameters())
 
         gen_opt = torch.optim.Adam(gen_p, 1e-4, (.5, .9))
@@ -973,15 +992,15 @@ class RAVE(pl.LightningModule):
         # --------------------------------------
 
         x_clean = x.unsqueeze(1)
-        x_perturbed_1 = batch['data_perturbed_1'].unsqueeze(1)
-        x_perturbed_2 = batch['data_perturbed_2'].unsqueeze(1)
+        #x_perturbed_1 = batch['data_perturbed_1'].unsqueeze(1)
+        #x_perturbed_2 = batch['data_perturbed_2'].unsqueeze(1)
 
-        x_perturbed_1 = x_perturbed_1 / x_perturbed_1.abs().amax(dim=-1, keepdim=True).clamp_min(1e-7)
-        x_perturbed_2 = x_perturbed_2 / x_perturbed_2.abs().amax(dim=-1, keepdim=True).clamp_min(1e-7)
+        #x_perturbed_1 = x_perturbed_1 / x_perturbed_1.abs().amax(dim=-1, keepdim=True).clamp_min(1e-7)
+        #x_perturbed_2 = x_perturbed_2 / x_perturbed_2.abs().amax(dim=-1, keepdim=True).clamp_min(1e-7)
         
         if self.pqmf is not None:  # MULTIBAND DECOMPOSITION
-            x_perturbed_1 = self.pqmf(x_perturbed_1)
-            x_perturbed_2 = self.pqmf(x_perturbed_2)
+            #x_perturbed_1 = self.pqmf(x_perturbed_1)
+            #x_perturbed_2 = self.pqmf(x_perturbed_2)
             x_clean = self.pqmf(x_clean)
             #excitation = self.pqmf(excitation)
             p.tick("pqmf")
@@ -990,17 +1009,24 @@ class RAVE(pl.LightningModule):
             self.encoder.eval()
 
         # ENCODE INPUT
-        z_init_1, kl = self.reparametrize(*self.encoder(x_perturbed_1))
+        z_init_1, kl = self.reparametrize(*self.encoder(x_clean))
         p.tick("encode")
         
-        with torch.no_grad():
-            z_init_2, kl_2 = self.reparametrize(*self.encoder(x_perturbed_2))
-            z_init_2.detach()
+        #with torch.no_grad():
+        #    z_init_2, kl_2 = self.reparametrize(*self.encoder(x_perturbed_2))
+        #    z_init_2.detach()
 
         if self.warmed_up:  # FREEZE ENCODER
             z_init_1 = z_init_1.detach()
             kl = kl.detach()
-
+            
+        predicted_units = self.CE_projection(z_init_1)
+        
+        print(batch['discrete_units_16k'].shape, predicted_units.shape)
+        
+        CE_loss = torch.nn.functional.cross_entropy(predicted_units, batch['discrete_units_16k'])
+        print(CE_loss)
+            
         z = torch.cat((z_init_1, sp), 1)
         
         if self.warmed_up:
@@ -1032,6 +1058,8 @@ class RAVE(pl.LightningModule):
                 contrastrive_loss, mean_positive, mean_negative = self.contr_loss(z_init_1, z_init_2)
         else:
             contrastrive_loss = 0
+            mean_positive = 0
+            mean_negative = 0
 
         #reverse_z, _ = self.reparametrize(*self.encoder(y))
         #content_loss = torch.nn.L1Loss(z_init, reverse_z)
@@ -1179,12 +1207,13 @@ class RAVE(pl.LightningModule):
         # --------------------------------------
 
         x_clean = x.unsqueeze(1)
-        x_perturbed_1 = batch['data_perturbed_1'].unsqueeze(1)
-        x_perturbed_2 = batch['data_perturbed_2'].unsqueeze(1)
+        
+        #x_perturbed_1 = batch['data_perturbed_1'].unsqueeze(1)
+        #x_perturbed_2 = batch['data_perturbed_2'].unsqueeze(1)
 
         if self.pqmf is not None:
             x_clean = self.pqmf(x_clean)
-            x_perturbed_1 = self.pqmf(x_perturbed_1)
+            #x_perturbed_1 = self.pqmf(x_perturbed_1)
             #excitation = self.pqmf(excitation)
 
         mean, scale = self.encoder(x_clean)
@@ -1195,7 +1224,7 @@ class RAVE(pl.LightningModule):
 
         if self.pqmf is not None:
             x_clean = self.pqmf.inverse(x_clean)
-            x_perturbed_1 = self.pqmf.inverse(x_perturbed_1)
+            #x_perturbed_1 = self.pqmf.inverse(x_perturbed_1)
             y = self.pqmf.inverse(y)
             #excitation = self.pqmf.inverse(excitation)
 
@@ -1204,7 +1233,6 @@ class RAVE(pl.LightningModule):
         #if self.trainer is not None:
         self.log("validation", distance)
         wandb.log({"validation": distance})
-
 
         #FOR CONVERSION
         speaker_emb_avg = batch['speaker_id_avg']
@@ -1232,15 +1260,16 @@ class RAVE(pl.LightningModule):
             input_conversion = self.pqmf.inverse(input_conversion)
 
         return (torch.cat([x_clean, y], -1), mean, 
-                torch.cat([x_clean, x_perturbed_1, x_perturbed_2], -1),
+                #torch.cat([x_clean, x_perturbed_1, x_perturbed_2], -1),
                 torch.cat([input_conversion, target_conversion, converted], -1))
 
     def validation_epoch_end(self, out):
-        audio, z, perturbed, converted = list(zip(*out))
+        audio, z, converted = list(zip(*out))
 
         if self.saved_step > self.warmup:
             self.warmed_up = True
-
+        
+        """
         # LATENT SPACE ANALYSIS
         if not self.warmed_up:
             z = torch.cat(z, 0)
@@ -1248,6 +1277,8 @@ class RAVE(pl.LightningModule):
 
             self.latent_mean.copy_(z.mean(0))
             z = z - self.latent_mean
+            
+            print(z.shape)
 
             pca = PCA(z.shape[-1]).fit(z.cpu().numpy())
 
@@ -1264,6 +1295,8 @@ class RAVE(pl.LightningModule):
             for p in var_percent:
                 self.log(f"{p}%_manifold",
                          np.argmax(var > p).astype(np.float32))
+        
+        """
 
         y = torch.cat(audio, 0)[:64].reshape(-1)
         self.logger.experiment.add_audio("audio_val", y,
@@ -1272,17 +1305,6 @@ class RAVE(pl.LightningModule):
         wandb.log({
             f"audio_val_{self.saved_step.item():06d}":
             wandb.Audio(y.detach().cpu().numpy(),
-                        caption="audio",
-                        sample_rate=self.sr)
-        })
-
-        x_per = torch.cat(perturbed, 0)[:64].reshape(-1)
-        self.logger.experiment.add_audio("audio_per", x_per,
-                                         self.saved_step.item(), self.sr)
-
-        wandb.log({
-            f"audio_per{self.saved_step.item():06d}":
-            wandb.Audio(x_per.detach().cpu().numpy(),
                         caption="audio",
                         sample_rate=self.sr)
         })
