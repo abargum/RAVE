@@ -58,7 +58,7 @@ if __name__ == "__main__":
         D_MULTIPLIER = 4
         D_N_LAYERS = 4
 
-        WARMUP = setting(default=2000000, small=1000000, large=3000000)
+        WARMUP = setting(default=1000000, small=1000000, large=3000000)
         MODE = "hinge"
         CKPT = None
 
@@ -66,15 +66,15 @@ if __name__ == "__main__":
         WAV = None
         SR = 48000
         N_SIGNAL = 65536
-        MAX_STEPS = setting(default=9000000, small=3000000, large=6000000)
+        MAX_STEPS = setting(default=6000000, small=3000000, large=6000000)
         VAL_EVERY = 10000
         BLOCK_SIZE = 128
 
         BATCH = 8
 
         SPEAKER_ENCODER = 'RESNET'
-        CONTRASTIVE_LOSS = True
-        CONTENT_LOSS = True
+        #CONTRASTIVE_LOSS = True
+        #CONTENT_LOSS = True
 
         NAME = None
         
@@ -109,8 +109,8 @@ if __name__ == "__main__":
         mode=args.MODE,
         block_size=args.BLOCK_SIZE,
         speaker_encoder=args.SPEAKER_ENCODER,
-        contrastive_loss = args.CONTRASTIVE_LOSS,
-        content_loss = args.CONTENT_LOSS,
+        #contrastive_loss = args.CONTRASTIVE_LOSS,
+        #content_loss = args.CONTENT_LOSS,
         no_latency=args.NO_LATENCY,
         sr=args.SR,
         min_kl=args.MIN_KL,

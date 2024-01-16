@@ -769,8 +769,8 @@ class RAVE(pl.LightningModule):
                  mode,
                  block_size,
                  speaker_encoder,
-                 contrastive_loss,
-                 content_loss,
+                 #contrastive_loss,
+                 #content_loss,
                  no_latency=False,
                  min_kl=1e-4,
                  max_kl=5e-1,
@@ -860,8 +860,8 @@ class RAVE(pl.LightningModule):
                                           negative_samples_minimum_distance_to_positive=10,
                                           temperature=0.1)
         
-        self.contrastive = contrastive_loss
-        self.content = content_loss
+        self.contrastive = True #contrastive_loss
+        self.content = True #content_loss
 
     def configure_optimizers(self):
         gen_p = list(self.encoder.parameters())
@@ -1154,7 +1154,7 @@ class RAVE(pl.LightningModule):
         mean, scale = self.encoder(x)
         z, _ = self.reparametrize(mean, scale)
         
-        return z, torch.cat((z, sp), 1) #, excitation
+        return z, torch.cat((z, sp), 1), sp #, excitation
 
     def decode(self, z):
         y = self.decoder(z, add_noise=True)
