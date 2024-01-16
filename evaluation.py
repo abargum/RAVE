@@ -101,7 +101,7 @@ model = wenet.load_model('english')
 wer_full = 0
 cer_full = 0
 
-max_length = 1
+max_length = 300
 
 for i, example in enumerate(dataset):
     if i < max_length:
