@@ -607,7 +607,7 @@ class Encoder(nn.Module):
         net.append(
             cc.Conv1d(
                 out_dim,
-                latent_size,
+                2 * latent_size,
                 5,
                 padding=cc.get_padding(5, mode=padding_mode),
                 groups=2,
@@ -622,7 +622,7 @@ class Encoder(nn.Module):
 
     def forward(self, x):
         z = self.net(x)
-        return z #torch.split(z, z.shape[1] // 2, 1)
+        return torch.split(z, z.shape[1] // 2, 1)
 
 
 class Discriminator(nn.Module):
@@ -998,9 +998,9 @@ class RAVE(pl.LightningModule):
             self.encoder.eval()
 
         # ENCODE INPUT
-        #z_init_1, kl = self.reparametrize(*self.encoder(x_clean[:, :5, :]))
-        z_init_1 = self.encoder(x_clean[:, :5, :])
-        kl = 0
+        z_init_1, kl = self.reparametrize(*self.encoder(x_clean[:, :5, :]))
+        #z_init_1 = self.encoder(x_clean[:, :5, :])
+        #kl = 0
         p.tick("encode")
 
         if self.warmed_up:  # FREEZE ENCODER
@@ -1171,7 +1171,10 @@ class RAVE(pl.LightningModule):
         if self.pqmf is not None:
             x = self.pqmf(x)
 
-        z = self.encoder(x_clean[:, :5, :])
+        #z, = self.encoder(x_clean[:, :5, :])
+        
+        mean, scale = self.encoder(x[:, :5, :])
+        z, _ = self.reparametrize(mean, scale)
         
         return z, torch.cat((z, sp), 1)
 
@@ -1197,9 +1200,9 @@ class RAVE(pl.LightningModule):
         if self.pqmf is not None:
             x_clean = self.pqmf(x_clean)
 
-        #mean, scale = self.encoder(x_clean[:, :5, :])
-        #z, _ = self.reparametrize(mean, scale)
-        z = self.encoder(x_clean[:, :5, :])
+        mean, scale = self.encoder(x_clean[:, :5, :])
+        z, _ = self.reparametrize(mean, scale)
+        #z = self.encoder(x_clean[:, :5, :])
 
         z = torch.cat((z, sp), 1)
         y = self.decoder(z, add_noise=self.warmed_up)
