@@ -257,5 +257,5 @@ class SimpleDataset_VCTK(torch.utils.data.Dataset):
             'speaker_id': data['speaker_id'],
             'speaker_id_avg': data['speaker_id_avg'],
             'file_name': data['file_name'],
-            'discrete_units_16k': data['discrete_units_16k'].astype(np.float32)
+            #'discrete_units_16k': data['discrete_units_16k'].astype(np.float32)
         }
