@@ -607,7 +607,7 @@ class Encoder(nn.Module):
         net.append(
             cc.Conv1d(
                 out_dim,
-                2 * latent_size,
+                latent_size,
                 5,
                 padding=cc.get_padding(5, mode=padding_mode),
                 groups=2,
@@ -622,7 +622,7 @@ class Encoder(nn.Module):
 
     def forward(self, x):
         z = self.net(x)
-        return torch.split(z, z.shape[1] // 2, 1)
+        return z #torch.split(z, z.shape[1] // 2, 1)
 
 
 class Discriminator(nn.Module):
@@ -687,14 +687,16 @@ class CrossEntropyProjection(nn.Module):
     def __init__(self):
         super().__init__()
         self.layer_norm = torch.nn.LayerNorm(32)
-        self.logistic_projection = torch.nn.Linear(32, 100)
+        self.lin1 = torch.nn.Linear(64, 100)
+        self.lin2 = torch.nn.Linear(32, 136)
         self.softmax = torch.nn.Softmax()
         
     def forward(self, x):
         z_for_CE = self.layer_norm(x)
-        z_for_CE = self.logistic_projection(z_for_CE)
+        z_for_CE = self.lin1(torch.permute(z_for_CE, (0, 2, 1)))
+        z_for_CE = self.lin2(torch.permute(z_for_CE, (0, 2, 1)))
         z_for_CE = self.softmax(z_for_CE)
-        return torch.permute(z_for_CE, (0, 2, 1))
+        return z_for_CE
         
     
 class ContrastiveLoss(nn.Module):
@@ -888,7 +890,7 @@ class RAVE(pl.LightningModule):
         gen_p = list(self.decoder.parameters())
         dis_p = list(self.discriminator.parameters())
         
-        enc_opt = torch.optim.Adam(enc_p, 1e-4, (.5, .9))
+        enc_opt = torch.optim.AdamW(enc_p, 2e-5, betas=(.9, .98), eps=1e-06, weight_decay=1e-2)
         gen_opt = torch.optim.Adam(gen_p, 1e-4, (.5, .9))
         dis_opt = torch.optim.Adam(dis_p, 1e-4, (.5, .9))
 
@@ -996,30 +998,28 @@ class RAVE(pl.LightningModule):
 
         if self.warmed_up:  # EVAL ENCODER
             self.encoder.eval()
+            self.CE_projection.eval()
 
         # ENCODE INPUT
-        z_init_1, kl = self.reparametrize(*self.encoder(x_clean[:, :5, :]))
-        #z_init_1 = self.encoder(x_clean[:, :5, :])
-        #kl = 0
+        #z_init_1, kl = self.reparametrize(*self.encoder(x_clean[:, :5, :]))
+        z_init_1 = self.encoder(x_clean[:, :5, :])
+        kl = 0
         p.tick("encode")
 
         if self.warmed_up:  # FREEZE ENCODER
             z_init_1 = z_init_1.detach()
-            kl = kl.detach()
+            #kl = kl.detach()
             
         predicted_units = self.CE_projection(z_init_1)
-        #print(predicted_units.shape, batch['discrete_units_16k'].shape)
-        
-        CE_loss = torch.nn.functional.cross_entropy(predicted_units, batch['discrete_units_16k'].type(torch.int64))
-        #print(CE_loss)
-            
         z = torch.cat((z_init_1, sp), 1)
+        
+        z_detached = z.detach()
         
         if self.warmed_up:
             z = z.detach()
 
         # DECODE LATENT
-        y_pqmf = self.decoder(z, add_noise=self.warmed_up)
+        y_pqmf = self.decoder(z_detached, add_noise=self.warmed_up)
         p.tick("decode")
         
         # CONTENT OF RECONSTRUCTED (Y)
@@ -1104,7 +1104,11 @@ class RAVE(pl.LightningModule):
             min_beta=self.min_kl,
             max_beta=self.max_kl,
         )
-        loss_gen = distance + loss_adv + beta * kl + contrastrive_loss * self.contr_coeff + content_loss
+        
+        CE_loss = torch.nn.functional.cross_entropy(predicted_units, batch['discrete_units_16k'].type(torch.int64))
+        
+        loss_gen = distance + loss_adv #+ CE_loss #+ beta * kl + contrastrive_loss * self.contr_coeff + content_loss
+        
         if self.feature_match:
             loss_gen = loss_gen + feature_matching_distance
         p.tick("gen loss compose")
@@ -1115,16 +1119,20 @@ class RAVE(pl.LightningModule):
             loss_dis.backward()
             dis_opt.step()
         else:
-            enc_opt.zero_grad()
-            gen_opt.zero_grad()
-            
-            CE_loss.backward(retain_graph=True)
-            loss_gen.backward()
-            
-            z.detach()
-            
-            enc_opt.step()
-            gen_opt.step()
+            #RETAIN GRAPH AND ENC.OPT IS MESSING UP THE DISCRIMINATOR!!!
+            if not self.warmed_up:
+                gen_opt.zero_grad()
+                loss_gen.backward(retain_graph=True)
+                gen_opt.step()
+
+                enc_opt.zero_grad()
+                CE_loss = torch.nn.functional.cross_entropy(predicted_units, batch['discrete_units_16k'].type(torch.int64))
+                CE_loss.backward()
+                enc_opt.step()
+            else:
+                gen_opt.zero_grad()
+                loss_gen.backward()
+                gen_opt.step()
     
         p.tick("optimization")
 
@@ -1157,6 +1165,9 @@ class RAVE(pl.LightningModule):
         })
         
         self.update_warmup()
+        
+        if self.saved_step > self.warmup:
+            self.warmed_up = True
 
         # print(p)
 
@@ -1200,9 +1211,10 @@ class RAVE(pl.LightningModule):
         if self.pqmf is not None:
             x_clean = self.pqmf(x_clean)
 
-        mean, scale = self.encoder(x_clean[:, :5, :])
-        z, _ = self.reparametrize(mean, scale)
-        #z = self.encoder(x_clean[:, :5, :])
+        #mean, scale = self.encoder(x_clean[:, :5, :])
+        #z, _ = self.reparametrize(mean, scale)
+        
+        z = self.encoder(x_clean[:, :5, :])
 
         z = torch.cat((z, sp), 1)
         y = self.decoder(z, add_noise=self.warmed_up)
