@@ -146,14 +146,14 @@ if __name__ == "__main__":
         preprocess_function=preprocess,
         split_set="full",
         transforms=Perturb([
-            lambda x, x_p_1: (x.astype(np.float32), x_p_1.astype(np.float32)),
+            lambda x: (x.astype(np.float32)),
             RandomCrop(args.N_SIGNAL),
             RandomApply(
                 lambda x: random_phase_mangle(x, 20, 2000, .99, args.SR),
                 p=.8,
             ),
             Dequantize(16),
-            lambda x, x_p_1: (x.astype(np.float32), x_p_1.astype(np.float32)),
+            lambda x: (x.astype(np.float32)),
         ],
         args.SR),
     )
@@ -213,7 +213,7 @@ if __name__ == "__main__":
 
     example = next(iter(train))
     clean_example = example['data_clean']
-    perturbed_example = example['data_perturbed_1']
+    perturbed_example = example['data_clean']
     speaker_emb = example['speaker_emb']
     speaker_id = example['speaker_id']
     print("Input Audio Shape:", clean_example.shape,
