@@ -991,9 +991,11 @@ class RAVE(pl.LightningModule):
         # --------------------------------------
 
         x_clean = x.unsqueeze(1)
+        x_perturbed = batch['data_perturbed_1'].unsqueeze(1)
         
         if self.pqmf is not None:  # MULTIBAND DECOMPOSITION
             x_clean = self.pqmf(x_clean)
+            x_perturbed = self.pqmf(x_perturbed)
             p.tick("pqmf")
 
         if self.warmed_up:  # EVAL ENCODER
@@ -1001,8 +1003,8 @@ class RAVE(pl.LightningModule):
             self.CE_projection.eval()
 
         # ENCODE INPUT
-        #z_init_1, kl = self.reparametrize(*self.encoder(x_clean[:, :5, :]))
-        z_init_1 = self.encoder(x_clean[:, :5, :])
+        #z_init_1, kl = self.reparametrize(*self.encoder(x_perturbed[:, :5, :]))
+        z_init_1 = self.encoder(x_perturbed[:, :5, :])
         kl = 0
         p.tick("encode")
 
@@ -1107,7 +1109,7 @@ class RAVE(pl.LightningModule):
         
         CE_loss = torch.nn.functional.cross_entropy(predicted_units, batch['discrete_units_16k'].type(torch.int64))
         
-        loss_gen = distance + loss_adv #+ CE_loss #+ beta * kl + contrastrive_loss * self.contr_coeff + content_loss
+        loss_gen = distance + loss_adv #+ beta * kl + contrastrive_loss * self.contr_coeff + content_loss
         
         if self.feature_match:
             loss_gen = loss_gen + feature_matching_distance
@@ -1126,7 +1128,7 @@ class RAVE(pl.LightningModule):
                 gen_opt.step()
 
                 enc_opt.zero_grad()
-                CE_loss = torch.nn.functional.cross_entropy(predicted_units, batch['discrete_units_16k'].type(torch.int64))
+                #CE_loss = torch.nn.functional.cross_entropy(predicted_units, batch['discrete_units_16k'].type(torch.int64))
                 CE_loss.backward()
                 enc_opt.step()
             else:
@@ -1260,57 +1262,61 @@ class RAVE(pl.LightningModule):
                 torch.cat([input_conversion, target_conversion, converted], -1))
 
     def validation_epoch_end(self, out):
-        audio, z, converted = list(zip(*out))
-
-        if self.saved_step > self.warmup:
-            self.warmed_up = True
         
-        """
-        # LATENT SPACE ANALYSIS
-        if not self.warmed_up:
-            z = torch.cat(z, 0)
-            z = rearrange(z, "b c t -> (b t) c")
+        if len(out) != 0:
+            audio, z, converted = list(zip(*out))
 
-            self.latent_mean.copy_(z.mean(0))
-            z = z - self.latent_mean
-            
-            print(z.shape)
+            if self.saved_step > self.warmup:
+                self.warmed_up = True
 
-            pca = PCA(z.shape[-1]).fit(z.cpu().numpy())
+            """
+            # LATENT SPACE ANALYSIS
+            if not self.warmed_up:
+                z = torch.cat(z, 0)
+                z = rearrange(z, "b c t -> (b t) c")
 
-            components = pca.components_
-            components = torch.from_numpy(components).to(z)
-            self.latent_pca.copy_(components)
+                self.latent_mean.copy_(z.mean(0))
+                z = z - self.latent_mean
 
-            var = pca.explained_variance_ / np.sum(pca.explained_variance_)
-            var = np.cumsum(var)
+                print(z.shape)
 
-            self.fidelity.copy_(torch.from_numpy(var).to(self.fidelity))
+                pca = PCA(z.shape[-1]).fit(z.cpu().numpy())
 
-            var_percent = [.8, .9, .95, .99]
-            for p in var_percent:
-                self.log(f"{p}%_manifold",
-                         np.argmax(var > p).astype(np.float32))
-        
-        """
+                components = pca.components_
+                components = torch.from_numpy(components).to(z)
+                self.latent_pca.copy_(components)
 
-        y = torch.cat(audio, 0)[:64].reshape(-1)
-        self.logger.experiment.add_audio("audio_val", y,
-                                         self.saved_step.item(), self.sr)
+                var = pca.explained_variance_ / np.sum(pca.explained_variance_)
+                var = np.cumsum(var)
 
-        wandb.log({
-            f"audio_val_{self.saved_step.item():06d}":
-            wandb.Audio(y.detach().cpu().numpy(),
-                        caption="audio",
-                        sample_rate=self.sr)
-        })
+                self.fidelity.copy_(torch.from_numpy(var).to(self.fidelity))
 
-        convert = torch.cat(converted, 0)[:64].reshape(-1)
-        wandb.log({
-            f"audio_conv{self.saved_step.item():06d}":
-            wandb.Audio(convert.detach().cpu().numpy(),
-                        caption="audio",
-                        sample_rate=self.sr)
-        })
+                var_percent = [.8, .9, .95, .99]
+                for p in var_percent:
+                    self.log(f"{p}%_manifold",
+                             np.argmax(var > p).astype(np.float32))
 
-        self.idx += 1
+            """
+
+            y = torch.cat(audio, 0)[:64].reshape(-1)
+            self.logger.experiment.add_audio("audio_val", y,
+                                             self.saved_step.item(), self.sr)
+
+            wandb.log({
+                f"audio_val_{self.saved_step.item():06d}":
+                wandb.Audio(y.detach().cpu().numpy(),
+                            caption="audio",
+                            sample_rate=self.sr)
+            })
+
+            convert = torch.cat(converted, 0)[:64].reshape(-1)
+            wandb.log({
+                f"audio_conv{self.saved_step.item():06d}":
+                wandb.Audio(convert.detach().cpu().numpy(),
+                            caption="audio",
+                            sample_rate=self.sr)
+            })
+
+            self.idx += 1
+        else:
+            self.idx += 1
