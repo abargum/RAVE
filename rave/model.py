@@ -24,6 +24,8 @@ import wandb
 import torchyin
 from transformers import logging
 
+from rave.discriminator import Discriminator
+
 logging.set_verbosity_error()
 
 class Profiler:
@@ -607,7 +609,7 @@ class Encoder(nn.Module):
         net.append(
             cc.Conv1d(
                 out_dim,
-                latent_size,
+                2 * latent_size,
                 5,
                 padding=cc.get_padding(5, mode=padding_mode),
                 groups=2,
@@ -622,65 +624,65 @@ class Encoder(nn.Module):
 
     def forward(self, x):
         z = self.net(x)
-        return z #torch.split(z, z.shape[1] // 2, 1)
+        return torch.split(z, z.shape[1] // 2, 1)
 
 
-class Discriminator(nn.Module):
-    def __init__(self, in_size, capacity, multiplier, n_layers):
-        super().__init__()
+# class Discriminator(nn.Module):
+#     def __init__(self, in_size, capacity, multiplier, n_layers):
+#         super().__init__()
 
-        net = [
-            wn(cc.Conv1d(in_size, capacity, 15, padding=cc.get_padding(15)))
-        ]
-        net.append(nn.LeakyReLU(.2))
+#         net = [
+#             wn(cc.Conv1d(in_size, capacity, 15, padding=cc.get_padding(15)))
+#         ]
+#         net.append(nn.LeakyReLU(.2))
 
-        for i in range(n_layers):
-            net.append(
-                wn(
-                    cc.Conv1d(
-                        capacity * multiplier**i,
-                        min(1024, capacity * multiplier**(i + 1)),
-                        41,
-                        stride=multiplier,
-                        padding=cc.get_padding(41, multiplier),
-                        groups=multiplier**(i + 1),
-                    )))
-            net.append(nn.LeakyReLU(.2))
+#         for i in range(n_layers):
+#             net.append(
+#                 wn(
+#                     cc.Conv1d(
+#                         capacity * multiplier**i,
+#                         min(1024, capacity * multiplier**(i + 1)),
+#                         41,
+#                         stride=multiplier,
+#                         padding=cc.get_padding(41, multiplier),
+#                         groups=multiplier**(i + 1),
+#                     )))
+#             net.append(nn.LeakyReLU(.2))
 
-        net.append(
-            wn(
-                cc.Conv1d(
-                    min(1024, capacity * multiplier**(i + 1)),
-                    min(1024, capacity * multiplier**(i + 1)),
-                    5,
-                    padding=cc.get_padding(5),
-                )))
-        net.append(nn.LeakyReLU(.2))
-        net.append(
-            wn(cc.Conv1d(min(1024, capacity * multiplier**(i + 1)), 1, 1)))
-        self.net = nn.ModuleList(net)
+#         net.append(
+#             wn(
+#                 cc.Conv1d(
+#                     min(1024, capacity * multiplier**(i + 1)),
+#                     min(1024, capacity * multiplier**(i + 1)),
+#                     5,
+#                     padding=cc.get_padding(5),
+#                 )))
+#         net.append(nn.LeakyReLU(.2))
+#         net.append(
+#             wn(cc.Conv1d(min(1024, capacity * multiplier**(i + 1)), 1, 1)))
+#         self.net = nn.ModuleList(net)
 
-    def forward(self, x):
-        feature = []
-        for layer in self.net:
-            x = layer(x)
-            if isinstance(layer, nn.Conv1d):
-                feature.append(x)
-        return feature
+#     def forward(self, x):
+#         feature = []
+#         for layer in self.net:
+#             x = layer(x)
+#             if isinstance(layer, nn.Conv1d):
+#                 feature.append(x)
+#         return feature
 
 
-class StackDiscriminators(nn.Module):
-    def __init__(self, n_dis, *args, **kwargs):
-        super().__init__()
-        self.discriminators = nn.ModuleList(
-            [Discriminator(*args, **kwargs) for i in range(n_dis)], )
+# class StackDiscriminators(nn.Module):
+#     def __init__(self, n_dis, *args, **kwargs):
+#         super().__init__()
+#         self.discriminators = nn.ModuleList(
+#             [Discriminator(*args, **kwargs) for i in range(n_dis)], )
 
-    def forward(self, x):
-        features = []
-        for layer in self.discriminators:
-            features.append(layer(x))
-            x = nn.functional.avg_pool1d(x, 2)
-        return features
+#     def forward(self, x):
+#         features = []
+#         for layer in self.discriminators:
+#             features.append(layer(x))
+#             x = nn.functional.avg_pool1d(x, 2)
+#         return features
     
 
 class CrossEntropyProjection(nn.Module):
@@ -689,6 +691,7 @@ class CrossEntropyProjection(nn.Module):
         self.layer_norm = torch.nn.LayerNorm(32)
         self.lin1 = torch.nn.Linear(64, 100)
         self.lin2 = torch.nn.Linear(32, 136)
+        #self.logistic_projection = torch.nn.Linear(32, 100)
         self.softmax = torch.nn.Softmax()
         
     def forward(self, x):
@@ -696,12 +699,11 @@ class CrossEntropyProjection(nn.Module):
         z_for_CE = self.lin1(torch.permute(z_for_CE, (0, 2, 1)))
         z_for_CE = self.lin2(torch.permute(z_for_CE, (0, 2, 1)))
         z_for_CE = self.softmax(z_for_CE)
-        return z_for_CE
+        return z_for_CE #torch.permute(z_for_CE, (0, 2, 1))
         
     
 class ContrastiveLoss(nn.Module):
     """Contrastive loss.
-
     Introduced in Kaizhi Qian et al., _Contentvec: An improved self-supervised speech representation by disentangling speakers_
     """
     def __init__(
@@ -840,13 +842,15 @@ class RAVE(pl.LightningModule):
             bias,
         )
 
-        self.discriminator = StackDiscriminators(
-            3,
-            in_size=1,
-            capacity=d_capacity,
-            multiplier=d_multiplier,
-            n_layers=d_n_layers,
-        )
+        # self.discriminator = StackDiscriminators(
+        #     3,
+        #     in_size=1,
+        #     capacity=d_capacity,
+        #     multiplier=d_multiplier,
+        #     n_layers=d_n_layers,
+        # )
+
+        self.discriminator = Discriminator()
 
         self.idx = 0
 
@@ -888,9 +892,11 @@ class RAVE(pl.LightningModule):
         enc_p += list(self.CE_projection.parameters())
         
         gen_p = list(self.decoder.parameters())
+        #gen_p += list(self.encoder.parameters())
+        #gen_p += list(self.CE_projection.parameters())
         dis_p = list(self.discriminator.parameters())
         
-        enc_opt = torch.optim.AdamW(enc_p, 2e-5, betas=(.9, .98), eps=1e-06, weight_decay=1e-2)
+        enc_opt = torch.optim.Adam(enc_p, 1e-4, (.5, .9))
         gen_opt = torch.optim.Adam(gen_p, 1e-4, (.5, .9))
         dis_opt = torch.optim.Adam(dis_p, 1e-4, (.5, .9))
 
@@ -991,11 +997,9 @@ class RAVE(pl.LightningModule):
         # --------------------------------------
 
         x_clean = x.unsqueeze(1)
-        x_perturbed = batch['data_perturbed_1'].unsqueeze(1)
         
         if self.pqmf is not None:  # MULTIBAND DECOMPOSITION
             x_clean = self.pqmf(x_clean)
-            x_perturbed = self.pqmf(x_perturbed)
             p.tick("pqmf")
 
         if self.warmed_up:  # EVAL ENCODER
@@ -1003,25 +1007,28 @@ class RAVE(pl.LightningModule):
             self.CE_projection.eval()
 
         # ENCODE INPUT
-        #z_init_1, kl = self.reparametrize(*self.encoder(x_perturbed[:, :5, :]))
-        z_init_1 = self.encoder(x_perturbed[:, :5, :])
-        kl = 0
+        z_init_1, kl = self.reparametrize(*self.encoder(x_clean[:, :5, :]))
+        #z_init_1 = self.encoder(x_clean[:, :5, :])
+        #kl = 0
         p.tick("encode")
 
         if self.warmed_up:  # FREEZE ENCODER
             z_init_1 = z_init_1.detach()
-            #kl = kl.detach()
+            kl = kl.detach()
             
         predicted_units = self.CE_projection(z_init_1)
-        z = torch.cat((z_init_1, sp), 1)
+        #print(predicted_units.shape, batch['discrete_units_16k'].shape)
         
-        z_detached = z.detach()
+        CE_loss = torch.nn.functional.cross_entropy(predicted_units, batch['discrete_units_16k'].type(torch.int64))
+        #print(CE_loss)
+            
+        z = torch.cat((z_init_1, sp), 1)
         
         if self.warmed_up:
             z = z.detach()
 
         # DECODE LATENT
-        y_pqmf = self.decoder(z_detached, add_noise=self.warmed_up)
+        y_pqmf = self.decoder(z, add_noise=self.warmed_up)
         p.tick("decode")
         
         # CONTENT OF RECONSTRUCTED (Y)
@@ -1061,42 +1068,73 @@ class RAVE(pl.LightningModule):
         distance = distance + loud_dist
         p.tick("loudness distance")
 
-        feature_matching_distance = 0.
-        if self.warmed_up:  # DISCRIMINATION
-            feature_true = self.discriminator(x_clean)
-            feature_fake = self.discriminator(y)
+        if self.warmed_up:
+            # MRD, MPD losses.
+            res_fake, period_fake = self.discriminator(y)
 
-            loss_dis = 0
-            loss_adv = 0
+            # Compute LSGAN loss for all frames.
+            loss_adv = 0.0
+            for (_, score_fake) in res_fake + period_fake:
+                loss_adv += torch.mean(torch.pow(score_fake - 1.0, 2))
 
-            pred_true = 0
-            pred_fake = 0
+            # Average across frames.
+            loss_adv = loss_adv / len(res_fake + period_fake)
 
-            for scale_true, scale_fake in zip(feature_true, feature_fake):
-                feature_matching_distance = feature_matching_distance + 10 * sum(
-                    map(
-                        lambda x_clean, y: abs(x_clean - y).mean(),
-                        scale_true,
-                        scale_fake,
-                    )) / len(scale_true)
+            # MRD, MPD losses.
+            res_fake, period_fake = self.discriminator(y.detach())  # fake audio from generator
+            res_real, period_real = self.discriminator(x_clean)  # real audio
 
-                _dis, _adv = self.adversarial_combine(
-                    scale_true[-1],
-                    scale_fake[-1],
-                    mode=self.mode,
-                )
+            # Compute LSGAN loss for all frames.
+            loss_dis = 0.0
+            for (_, score_fake), (_, score_real) in zip(
+                res_fake + period_fake, res_real + period_real
+            ):
+                loss_dis += torch.mean(torch.pow(score_real - 1.0, 2))
+                loss_dis += torch.mean(torch.pow(score_fake, 2))
 
-                pred_true = pred_true + scale_true[-1].mean()
-                pred_fake = pred_fake + scale_fake[-1].mean()
-
-                loss_dis = loss_dis + _dis
-                loss_adv = loss_adv + _adv
+            # Compute average to get overall discriminator loss (L_D).
+            loss_dis = loss_dis / len(res_fake + period_fake)
 
         else:
-            pred_true = torch.tensor(0.).to(x_clean)
-            pred_fake = torch.tensor(0.).to(x_clean)
-            loss_dis = torch.tensor(0.).to(x_clean)
             loss_adv = torch.tensor(0.).to(x_clean)
+            loss_dis = torch.tensor(0.).to(x_clean)
+
+        # feature_matching_distance = 0.
+        # if self.warmed_up:  # DISCRIMINATION
+        #     feature_true = self.discriminator(x_clean)
+        #     feature_fake = self.discriminator(y)
+
+        #     loss_dis = 0
+        #     loss_adv = 0
+
+        #     pred_true = 0
+        #     pred_fake = 0
+
+        #     for scale_true, scale_fake in zip(feature_true, feature_fake):
+        #         feature_matching_distance = feature_matching_distance + 10 * sum(
+        #             map(
+        #                 lambda x_clean, y: abs(x_clean - y).mean(),
+        #                 scale_true,
+        #                 scale_fake,
+        #             )) / len(scale_true)
+
+        #         _dis, _adv = self.adversarial_combine(
+        #             scale_true[-1],
+        #             scale_fake[-1],
+        #             mode=self.mode,
+        #         )
+
+        #         pred_true = pred_true + scale_true[-1].mean()
+        #         pred_fake = pred_fake + scale_fake[-1].mean()
+
+        #         loss_dis = loss_dis + _dis
+        #         loss_adv = loss_adv + _adv
+
+        # else:
+        #     pred_true = torch.tensor(0.).to(x_clean)
+        #     pred_fake = torch.tensor(0.).to(x_clean)
+        #     loss_dis = torch.tensor(0.).to(x_clean)
+        #     loss_adv = torch.tensor(0.).to(x_clean)
 
         # COMPOSE GEN LOSS
         beta = get_beta_kl_cyclic_annealed(
@@ -1106,13 +1144,9 @@ class RAVE(pl.LightningModule):
             min_beta=self.min_kl,
             max_beta=self.max_kl,
         )
-        
-        CE_loss = torch.nn.functional.cross_entropy(predicted_units, batch['discrete_units_16k'].type(torch.int64))
-        
-        loss_gen = distance + loss_adv #+ beta * kl + contrastrive_loss * self.contr_coeff + content_loss
-        
-        if self.feature_match:
-            loss_gen = loss_gen + feature_matching_distance
+        loss_gen = distance + loss_adv + beta * kl + contrastrive_loss * self.contr_coeff + content_loss
+        # if self.feature_match:
+        #     loss_gen = loss_gen + feature_matching_distance
         p.tick("gen loss compose")
 
         # OPTIMIZATION
@@ -1121,20 +1155,16 @@ class RAVE(pl.LightningModule):
             loss_dis.backward()
             dis_opt.step()
         else:
-            #RETAIN GRAPH AND ENC.OPT IS MESSING UP THE DISCRIMINATOR!!!
-            if not self.warmed_up:
-                gen_opt.zero_grad()
-                loss_gen.backward(retain_graph=True)
-                gen_opt.step()
-
-                enc_opt.zero_grad()
-                #CE_loss = torch.nn.functional.cross_entropy(predicted_units, batch['discrete_units_16k'].type(torch.int64))
-                CE_loss.backward()
-                enc_opt.step()
-            else:
-                gen_opt.zero_grad()
-                loss_gen.backward()
-                gen_opt.step()
+            #enc_opt.zero_grad()
+            gen_opt.zero_grad()
+            
+            #CE_loss.backward(retain_graph=True)
+            loss_gen.backward()
+            
+            #z.detach()
+            
+            #enc_opt.step()
+            gen_opt.step()
     
         p.tick("optimization")
 
@@ -1143,11 +1173,11 @@ class RAVE(pl.LightningModule):
         self.log("loss_gen", loss_gen)
         self.log("loud_dist", loud_dist)
         self.log("regularization", kl)
-        self.log("pred_true", pred_true.mean())
-        self.log("pred_fake", pred_fake.mean())
+        #self.log("pred_true", pred_true.mean())
+        #self.log("pred_fake", pred_fake.mean())
         self.log("distance", distance)
         self.log("beta", beta)
-        self.log("feature_matching", feature_matching_distance),
+        #self.log("feature_matching", feature_matching_distance),
         self.log("CE", CE_loss),
         #self.log("content_loss", content_loss)
         p.tick("log")
@@ -1156,7 +1186,7 @@ class RAVE(pl.LightningModule):
             "loss_dis": loss_dis,
             "loss_gen": loss_gen,
             "distance": distance,
-            "feature_matching": feature_matching_distance,
+            #"feature_matching": feature_matching_distance,
             "contrastive_loss": contrastrive_loss,
             "contrastive_coeff": self.contr_coeff,
             "mean_positive": mean_positive,
@@ -1167,9 +1197,9 @@ class RAVE(pl.LightningModule):
         })
         
         self.update_warmup()
-        
+
         if self.saved_step > self.warmup:
-            self.warmed_up = True
+              self.warmed_up = True
 
         # print(p)
 
@@ -1184,10 +1214,7 @@ class RAVE(pl.LightningModule):
         if self.pqmf is not None:
             x = self.pqmf(x)
 
-        #z, = self.encoder(x_clean[:, :5, :])
-        
-        mean, scale = self.encoder(x[:, :5, :])
-        z, _ = self.reparametrize(mean, scale)
+        z = self.encoder(x_clean[:, :5, :])
         
         return z, torch.cat((z, sp), 1)
 
@@ -1213,10 +1240,9 @@ class RAVE(pl.LightningModule):
         if self.pqmf is not None:
             x_clean = self.pqmf(x_clean)
 
-        #mean, scale = self.encoder(x_clean[:, :5, :])
-        #z, _ = self.reparametrize(mean, scale)
-        
-        z = self.encoder(x_clean[:, :5, :])
+        mean, scale = self.encoder(x_clean[:, :5, :])
+        z, _ = self.reparametrize(mean, scale)
+        #z = self.encoder(x_clean[:, :5, :])
 
         z = torch.cat((z, sp), 1)
         y = self.decoder(z, add_noise=self.warmed_up)
@@ -1237,7 +1263,7 @@ class RAVE(pl.LightningModule):
         speaker_emb_avg = torch.permute(speaker_emb_avg.unsqueeze(1).repeat(1, 32, 1), (0, 2, 1))
 
         input_index = 0
-        target_index = 1
+        target_index = 0
 
         input_conversion = x[input_index].unsqueeze(0).unsqueeze(0)
         target_conversion = x[target_index].unsqueeze(0).unsqueeze(0)
@@ -1246,9 +1272,9 @@ class RAVE(pl.LightningModule):
         if self.pqmf is not None:
             input_conversion = self.pqmf(input_conversion)
 
-        #mean, scale = self.encoder(input_conversion[:, :5, :])
-        #z, _ = self.reparametrize(mean, scale)
-        z = self.encoder(input_conversion[:, :5, :])
+        mean, scale = self.encoder(input_conversion[:, :5, :])
+        z, _ = self.reparametrize(mean, scale)
+        #z = self.encoder(input_conversion[:, :5, :])
 
         z = torch.cat((z, target_embedding), 1)
         converted = self.decoder(z, add_noise=self.warmed_up)
@@ -1262,61 +1288,59 @@ class RAVE(pl.LightningModule):
                 torch.cat([input_conversion, target_conversion, converted], -1))
 
     def validation_epoch_end(self, out):
-        
         if len(out) != 0:
-            audio, z, converted = list(zip(*out))
+           audio, z, converted = list(zip(*out))
 
-            if self.saved_step > self.warmup:
-                self.warmed_up = True
+           if self.saved_step > self.warmup:
+              self.warmed_up = True
+        """
+        # LATENT SPACE ANALYSIS
+        if not self.warmed_up:
+            z = torch.cat(z, 0)
+            z = rearrange(z, "b c t -> (b t) c")
 
-            """
-            # LATENT SPACE ANALYSIS
-            if not self.warmed_up:
-                z = torch.cat(z, 0)
-                z = rearrange(z, "b c t -> (b t) c")
+            self.latent_mean.copy_(z.mean(0))
+            z = z - self.latent_mean
+            
+            print(z.shape)
 
-                self.latent_mean.copy_(z.mean(0))
-                z = z - self.latent_mean
+            pca = PCA(z.shape[-1]).fit(z.cpu().numpy())
 
-                print(z.shape)
+            components = pca.components_
+            components = torch.from_numpy(components).to(z)
+            self.latent_pca.copy_(components)
 
-                pca = PCA(z.shape[-1]).fit(z.cpu().numpy())
+            var = pca.explained_variance_ / np.sum(pca.explained_variance_)
+            var = np.cumsum(var)
 
-                components = pca.components_
-                components = torch.from_numpy(components).to(z)
-                self.latent_pca.copy_(components)
+            self.fidelity.copy_(torch.from_numpy(var).to(self.fidelity))
 
-                var = pca.explained_variance_ / np.sum(pca.explained_variance_)
-                var = np.cumsum(var)
+            var_percent = [.8, .9, .95, .99]
+            for p in var_percent:
+                self.log(f"{p}%_manifold",
+                         np.argmax(var > p).astype(np.float32))
+        
+        """
+        if len(out) != 0:
+           y = torch.cat(audio, 0)[:64].reshape(-1)
+           self.logger.experiment.add_audio("audio_val", y,
+                                         self.saved_step.item(), self.sr)
 
-                self.fidelity.copy_(torch.from_numpy(var).to(self.fidelity))
+           wandb.log({f"audio_val_{self.saved_step.item():06d}":
+                        wandb.Audio(y.detach().cpu().numpy(),
+                        caption="audio",
+                        sample_rate=self.sr)
+           })
 
-                var_percent = [.8, .9, .95, .99]
-                for p in var_percent:
-                    self.log(f"{p}%_manifold",
-                             np.argmax(var > p).astype(np.float32))
-
-            """
-
-            y = torch.cat(audio, 0)[:64].reshape(-1)
-            self.logger.experiment.add_audio("audio_val", y,
-                                             self.saved_step.item(), self.sr)
-
-            wandb.log({
-                f"audio_val_{self.saved_step.item():06d}":
-                wandb.Audio(y.detach().cpu().numpy(),
-                            caption="audio",
-                            sample_rate=self.sr)
-            })
-
-            convert = torch.cat(converted, 0)[:64].reshape(-1)
-            wandb.log({
+           convert = torch.cat(converted, 0)[:64].reshape(-1)
+           wandb.log({
                 f"audio_conv{self.saved_step.item():06d}":
-                wandb.Audio(convert.detach().cpu().numpy(),
-                            caption="audio",
-                            sample_rate=self.sr)
-            })
+           wandb.Audio(convert.detach().cpu().numpy(),
+                        caption="audio",
+                        sample_rate=self.sr)
+           })
 
-            self.idx += 1
-        else:
-            self.idx += 1
+           self.idx += 1
+
+        if len(out) == 0:
+           self.idx += 1
