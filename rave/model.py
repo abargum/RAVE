@@ -24,7 +24,7 @@ import wandb
 import torchyin
 from transformers import logging
 
-from rave.discriminator import Discriminator
+from rave.discriminator import Discriminator_new
 
 logging.set_verbosity_error()
 
@@ -627,62 +627,62 @@ class Encoder(nn.Module):
         return torch.split(z, z.shape[1] // 2, 1)
 
 
-# class Discriminator(nn.Module):
-#     def __init__(self, in_size, capacity, multiplier, n_layers):
-#         super().__init__()
+class Discriminator(nn.Module):
+    def __init__(self, in_size, capacity, multiplier, n_layers):
+        super().__init__()
 
-#         net = [
-#             wn(cc.Conv1d(in_size, capacity, 15, padding=cc.get_padding(15)))
-#         ]
-#         net.append(nn.LeakyReLU(.2))
+        net = [
+            wn(cc.Conv1d(in_size, capacity, 15, padding=cc.get_padding(15)))
+        ]
+        net.append(nn.LeakyReLU(.2))
 
-#         for i in range(n_layers):
-#             net.append(
-#                 wn(
-#                     cc.Conv1d(
-#                         capacity * multiplier**i,
-#                         min(1024, capacity * multiplier**(i + 1)),
-#                         41,
-#                         stride=multiplier,
-#                         padding=cc.get_padding(41, multiplier),
-#                         groups=multiplier**(i + 1),
-#                     )))
-#             net.append(nn.LeakyReLU(.2))
+        for i in range(n_layers):
+            net.append(
+                wn(
+                    cc.Conv1d(
+                        capacity * multiplier**i,
+                        min(1024, capacity * multiplier**(i + 1)),
+                        41,
+                        stride=multiplier,
+                        padding=cc.get_padding(41, multiplier),
+                        groups=multiplier**(i + 1),
+                    )))
+            net.append(nn.LeakyReLU(.2))
 
-#         net.append(
-#             wn(
-#                 cc.Conv1d(
-#                     min(1024, capacity * multiplier**(i + 1)),
-#                     min(1024, capacity * multiplier**(i + 1)),
-#                     5,
-#                     padding=cc.get_padding(5),
-#                 )))
-#         net.append(nn.LeakyReLU(.2))
-#         net.append(
-#             wn(cc.Conv1d(min(1024, capacity * multiplier**(i + 1)), 1, 1)))
-#         self.net = nn.ModuleList(net)
+        net.append(
+            wn(
+                cc.Conv1d(
+                    min(1024, capacity * multiplier**(i + 1)),
+                    min(1024, capacity * multiplier**(i + 1)),
+                    5,
+                    padding=cc.get_padding(5),
+                )))
+        net.append(nn.LeakyReLU(.2))
+        net.append(
+            wn(cc.Conv1d(min(1024, capacity * multiplier**(i + 1)), 1, 1)))
+        self.net = nn.ModuleList(net)
 
-#     def forward(self, x):
-#         feature = []
-#         for layer in self.net:
-#             x = layer(x)
-#             if isinstance(layer, nn.Conv1d):
-#                 feature.append(x)
-#         return feature
+    def forward(self, x):
+        feature = []
+        for layer in self.net:
+            x = layer(x)
+            if isinstance(layer, nn.Conv1d):
+                feature.append(x)
+        return feature
 
 
-# class StackDiscriminators(nn.Module):
-#     def __init__(self, n_dis, *args, **kwargs):
-#         super().__init__()
-#         self.discriminators = nn.ModuleList(
-#             [Discriminator(*args, **kwargs) for i in range(n_dis)], )
+class StackDiscriminators(nn.Module):
+    def __init__(self, n_dis, *args, **kwargs):
+        super().__init__()
+        self.discriminators = nn.ModuleList(
+            [Discriminator(*args, **kwargs) for i in range(n_dis)], )
 
-#     def forward(self, x):
-#         features = []
-#         for layer in self.discriminators:
-#             features.append(layer(x))
-#             x = nn.functional.avg_pool1d(x, 2)
-#         return features
+    def forward(self, x):
+        features = []
+        for layer in self.discriminators:
+            features.append(layer(x))
+            x = nn.functional.avg_pool1d(x, 2)
+        return features
     
 
 class CrossEntropyProjection(nn.Module):
@@ -842,15 +842,15 @@ class RAVE(pl.LightningModule):
             bias,
         )
 
-        # self.discriminator = StackDiscriminators(
-        #     3,
-        #     in_size=1,
-        #     capacity=d_capacity,
-        #     multiplier=d_multiplier,
-        #     n_layers=d_n_layers,
-        # )
+        self.discriminator = StackDiscriminators(
+            3,
+            in_size=1,
+            capacity=d_capacity,
+            multiplier=d_multiplier,
+            n_layers=d_n_layers,
+        )
 
-        self.discriminator = Discriminator()
+        self.discriminator_new = Discriminator()
 
         self.idx = 0
 
@@ -895,12 +895,14 @@ class RAVE(pl.LightningModule):
         #gen_p += list(self.encoder.parameters())
         #gen_p += list(self.CE_projection.parameters())
         dis_p = list(self.discriminator.parameters())
+        dis_p_new = list(self.discriminator_new.parameters())
         
         enc_opt = torch.optim.Adam(enc_p, 1e-4, (.5, .9))
         gen_opt = torch.optim.Adam(gen_p, 1e-4, (.5, .9))
         dis_opt = torch.optim.Adam(dis_p, 1e-4, (.5, .9))
+        dis_opt_new = torch.optim.AdamW(dis_p_new, 1e-4, (.5, .9))
 
-        return gen_opt, dis_opt, enc_opt
+        return gen_opt, dis_opt_new, enc_opt
     
     def contrastive_loss_function(self, ling_1, ling_2, kappa=0.1, content_adj=10, candidates=15):
     
@@ -1070,7 +1072,7 @@ class RAVE(pl.LightningModule):
 
         if self.warmed_up:
             # MRD, MPD losses.
-            res_fake, period_fake = self.discriminator(y)
+            res_fake, period_fake = self.discriminator_new(y)
 
             # Compute LSGAN loss for all frames.
             loss_adv = 0.0
@@ -1081,8 +1083,8 @@ class RAVE(pl.LightningModule):
             loss_adv = loss_adv / len(res_fake + period_fake)
 
             # MRD, MPD losses.
-            res_fake, period_fake = self.discriminator(y.detach())  # fake audio from generator
-            res_real, period_real = self.discriminator(x_clean)  # real audio
+            res_fake, period_fake = self.discriminator_new(y.detach())  # fake audio from generator
+            res_real, period_real = self.discriminator_new(x_clean)  # real audio
 
             # Compute LSGAN loss for all frames.
             loss_dis = 0.0
@@ -1263,7 +1265,7 @@ class RAVE(pl.LightningModule):
         speaker_emb_avg = torch.permute(speaker_emb_avg.unsqueeze(1).repeat(1, 32, 1), (0, 2, 1))
 
         input_index = 0
-        target_index = 0
+        target_index = 1
 
         input_conversion = x[input_index].unsqueeze(0).unsqueeze(0)
         target_conversion = x[target_index].unsqueeze(0).unsqueeze(0)
