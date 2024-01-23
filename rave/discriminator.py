@@ -5,9 +5,9 @@ from .mpd import MultiPeriodDiscriminator
 from .mrd import MultiResolutionDiscriminator
 from omegaconf import OmegaConf
 
-class Discriminator(nn.Module):
+class Discriminator_new(nn.Module):
     def __init__(self):
-        super(Discriminator, self).__init__()
+        super(Discriminator_new, self).__init__()
         self.MRD = MultiResolutionDiscriminator()
         self.MPD = MultiPeriodDiscriminator()
 
