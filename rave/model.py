@@ -888,19 +888,19 @@ class RAVE(pl.LightningModule):
 
     def configure_optimizers(self):
         
-        enc_p = list(self.encoder.parameters())
-        enc_p += list(self.CE_projection.parameters())
+        #enc_p = list(self.encoder.parameters())
+        #enc_p += list(self.CE_projection.parameters())
         
         gen_p = list(self.decoder.parameters())
-        #gen_p += list(self.encoder.parameters())
-        #gen_p += list(self.CE_projection.parameters())
+        gen_p += list(self.encoder.parameters())
+        gen_p += list(self.CE_projection.parameters())
         dis_p = list(self.discriminator.parameters())
         
-        enc_opt = torch.optim.Adam(enc_p, 1e-4, (.5, .9))
+        #enc_opt = torch.optim.Adam(enc_p, 1e-4, (.5, .9))
         gen_opt = torch.optim.Adam(gen_p, 1e-4, (.5, .9))
         dis_opt = torch.optim.Adam(dis_p, 1e-4, (.5, .9))
 
-        return gen_opt, dis_opt, enc_opt
+        return gen_opt, dis_opt
     
     def contrastive_loss_function(self, ling_1, ling_2, kappa=0.1, content_adj=10, candidates=15):
     
@@ -986,7 +986,7 @@ class RAVE(pl.LightningModule):
         p = Profiler()
         self.saved_step += 1
 
-        gen_opt, dis_opt, enc_opt = self.optimizers()
+        gen_opt, dis_opt = self.optimizers()
         x = batch['data_clean']
 
         # SPEAKER EMBEDDING AND PITCH EXCITATION
@@ -1004,9 +1004,9 @@ class RAVE(pl.LightningModule):
             x_perturb = self.pqmf(x_perturb)
             p.tick("pqmf")
 
-        if self.warmed_up:  # EVAL ENCODER
-            self.encoder.eval()
-            self.CE_projection.eval()
+        #if self.warmed_up:  # EVAL ENCODER
+        #    self.encoder.eval()
+        #    self.CE_projection.eval()
 
         # ENCODE INPUT
         #z_init_1, kl = self.reparametrize(*self.encoder(x_clean[:, :5, :]))
@@ -1014,19 +1014,29 @@ class RAVE(pl.LightningModule):
         kl = 0
         p.tick("encode")
 
-        if self.warmed_up:  # FREEZE ENCODER
-            z_init_1 = z_init_1.detach()
-            kl = kl.detach()
+        #if self.warmed_up:  # FREEZE ENCODER
+            #z_init_1 = z_init_1.detach()
+           # kl = kl.detach()
             
         predicted_units = self.CE_projection(z_init_1)
-            
+ 
         z = torch.cat((z_init_1, sp), 1)
+
+        #z = torch.cat((z_init_1, sp), 1)
         
-        if self.warmed_up:
-            z = z.detach()
+        #z_detached = z.detach()
+        
+        #if self.warmed_up:
+        #    z = z.detach()
 
         # DECODE LATENT
         y_pqmf = self.decoder(z, add_noise=self.warmed_up)
+        
+        #if self.warmed_up:
+        #    z = z.detach()
+
+        # DECODE LATENT
+        #y_pqmf = self.decoder(z, add_noise=self.warmed_up)
         p.tick("decode")
         
         # CONTENT OF RECONSTRUCTED (Y)
@@ -1157,13 +1167,13 @@ class RAVE(pl.LightningModule):
             #RETAIN GRAPH AND ENC.OPT IS MESSING UP THE DISCRIMINATOR!!!
             if not self.warmed_up:
                 gen_opt.zero_grad()
-                loss_gen.backward(retain_graph=True)
+                loss_gen.backward()
                 gen_opt.step()
 
-                enc_opt.zero_grad()
+                #enc_opt.zero_grad()
                 #CE_loss = torch.nn.functional.cross_entropy(predicted_units, batch['discrete_units_16k'].type(torch.int64))
-                CE_loss.backward()
-                enc_opt.step()
+                #CE_loss.backward()
+                #enc_opt.step()
             else:
                 gen_opt.zero_grad()
                 loss_gen.backward()
