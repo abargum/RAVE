@@ -884,17 +884,20 @@ class RAVE(pl.LightningModule):
 
     def configure_optimizers(self):
         
-        enc_p = list(self.encoder.parameters())
-        enc_p += list(self.CE_projection.parameters())
+        #enc_p = list(self.encoder.parameters())
+        #enc_p += list(self.CE_projection.parameters())
         
         gen_p = list(self.decoder.parameters())
+        gen_p += list(self.CE_projection.parameters())
+        gen_p += list(self.encoder.parameters())
+        
         dis_p = list(self.discriminator.parameters())
         
-        enc_opt = torch.optim.AdamW(enc_p, 2e-5, betas=(.9, .98), eps=1e-06, weight_decay=1e-2)
+        #enc_opt = torch.optim.AdamW(enc_p, 2e-5, betas=(.9, .98), eps=1e-06, weight_decay=1e-2)
         gen_opt = torch.optim.Adam(gen_p, 1e-4, (.5, .9))
         dis_opt = torch.optim.Adam(dis_p, 1e-4, (.5, .9))
 
-        return gen_opt, dis_opt, enc_opt
+        return gen_opt, dis_opt#, enc_opt
     
     def contrastive_loss_function(self, ling_1, ling_2, kappa=0.1, content_adj=10, candidates=15):
     
@@ -980,7 +983,7 @@ class RAVE(pl.LightningModule):
         p = Profiler()
         self.saved_step += 1
 
-        gen_opt, dis_opt, enc_opt = self.optimizers()
+        gen_opt, dis_opt = self.optimizers()
         x = batch['data_clean']
 
         # SPEAKER EMBEDDING AND PITCH EXCITATION
@@ -996,20 +999,20 @@ class RAVE(pl.LightningModule):
             x_clean = self.pqmf(x_clean)
             p.tick("pqmf")
 
-        if self.warmed_up:  # EVAL ENCODER
-            self.encoder.eval()
-            self.CE_projection.eval()
+        #if self.warmed_up:  # EVAL ENCODER
+            #self.encoder.eval()
+            #self.CE_projection.eval()
 
         # ENCODE INPUT
         #z_init_1, kl = self.reparametrize(*self.encoder(x_clean[:, :5, :]))
         z_init_1 = self.encoder(x_clean[:, :5, :])
-        kl = 0
+        #kl = 0
         p.tick("encode")
 
-        if self.warmed_up:  # FREEZE ENCODER
-            z_init_1 = z_init_1.detach()
+        #if self.warmed_up:  # FREEZE ENCODER
+            #z_init_1 = z_init_1.detach()
             #kl = kl.detach()
-            
+                        
         predicted_units = self.CE_projection(z_init_1)
         z = torch.cat((z_init_1, sp), 1)
         
@@ -1107,7 +1110,7 @@ class RAVE(pl.LightningModule):
         
         CE_loss = torch.nn.functional.cross_entropy(predicted_units, batch['discrete_units_16k'].type(torch.int64))
         
-        loss_gen = distance + loss_adv #+ CE_loss #+ beta * kl + contrastrive_loss * self.contr_coeff + content_loss
+        loss_gen = distance + loss_adv + (2 * CE_loss) #+ beta * kl + contrastrive_loss * self.contr_coeff + content_loss
         
         if self.feature_match:
             loss_gen = loss_gen + feature_matching_distance
@@ -1119,20 +1122,26 @@ class RAVE(pl.LightningModule):
             loss_dis.backward()
             dis_opt.step()
         else:
+            #en_opt.zero_grad()
+            gen_opt.zero_grad()
+            loss_gen.backward()
+            gen_opt.step()
+            #enc_opt.step()
+            
             #RETAIN GRAPH AND ENC.OPT IS MESSING UP THE DISCRIMINATOR!!!
-            if not self.warmed_up:
-                gen_opt.zero_grad()
-                loss_gen.backward(retain_graph=True)
-                gen_opt.step()
+            #if not self.warmed_up:
+            #    gen_opt.zero_grad()
+            #    loss_gen.backward(retain_graph=True)
+            #   gen_opt.step()
 
-                enc_opt.zero_grad()
-                CE_loss = torch.nn.functional.cross_entropy(predicted_units, batch['discrete_units_16k'].type(torch.int64))
-                CE_loss.backward()
-                enc_opt.step()
-            else:
-                gen_opt.zero_grad()
-                loss_gen.backward()
-                gen_opt.step()
+            #    enc_opt.zero_grad()
+            #    #CE_loss = torch.nn.functional.cross_entropy(predicted_units, batch['discrete_units_16k'].type(torch.int64))
+            #    CE_loss.backward()
+            #    enc_opt.step()
+            #else:
+            #    gen_opt.zero_grad()
+            #    loss_gen.backward()
+            #    gen_opt.step()
     
         p.tick("optimization")
 
@@ -1182,10 +1191,10 @@ class RAVE(pl.LightningModule):
         if self.pqmf is not None:
             x = self.pqmf(x)
 
-        #z, = self.encoder(x_clean[:, :5, :])
+        z = self.encoder(x[:, :5, :])
         
-        mean, scale = self.encoder(x[:, :5, :])
-        z, _ = self.reparametrize(mean, scale)
+        #mean, scale = self.encoder(x[:, :5, :])
+        #z, _ = self.reparametrize(mean, scale)
         
         return z, torch.cat((z, sp), 1)
 
@@ -1211,10 +1220,10 @@ class RAVE(pl.LightningModule):
         if self.pqmf is not None:
             x_clean = self.pqmf(x_clean)
 
-        #mean, scale = self.encoder(x_clean[:, :5, :])
-        #z, _ = self.reparametrize(mean, scale)
+        mean, scale = self.encoder(x_clean[:, :5, :])
+        z, _ = self.reparametrize(mean, scale)
         
-        z = self.encoder(x_clean[:, :5, :])
+        #z = self.encoder(x_clean[:, :5, :])
 
         z = torch.cat((z, sp), 1)
         y = self.decoder(z, add_noise=self.warmed_up)
@@ -1244,9 +1253,9 @@ class RAVE(pl.LightningModule):
         if self.pqmf is not None:
             input_conversion = self.pqmf(input_conversion)
 
-        #mean, scale = self.encoder(input_conversion[:, :5, :])
-        #z, _ = self.reparametrize(mean, scale)
-        z = self.encoder(input_conversion[:, :5, :])
+        mean, scale = self.encoder(input_conversion[:, :5, :])
+        z, _ = self.reparametrize(mean, scale)
+        #z = self.encoder(input_conversion[:, :5, :])
 
         z = torch.cat((z, target_embedding), 1)
         converted = self.decoder(z, add_noise=self.warmed_up)
@@ -1260,57 +1269,61 @@ class RAVE(pl.LightningModule):
                 torch.cat([input_conversion, target_conversion, converted], -1))
 
     def validation_epoch_end(self, out):
-        audio, z, converted = list(zip(*out))
-
-        if self.saved_step > self.warmup:
-            self.warmed_up = True
         
-        """
-        # LATENT SPACE ANALYSIS
-        if not self.warmed_up:
-            z = torch.cat(z, 0)
-            z = rearrange(z, "b c t -> (b t) c")
+        if len(out) != 0:
+            audio, z, converted = list(zip(*out))
 
-            self.latent_mean.copy_(z.mean(0))
-            z = z - self.latent_mean
-            
-            print(z.shape)
+            if self.saved_step > self.warmup:
+                self.warmed_up = True
 
-            pca = PCA(z.shape[-1]).fit(z.cpu().numpy())
+            """
+            # LATENT SPACE ANALYSIS
+            if not self.warmed_up:
+                z = torch.cat(z, 0)
+                z = rearrange(z, "b c t -> (b t) c")
 
-            components = pca.components_
-            components = torch.from_numpy(components).to(z)
-            self.latent_pca.copy_(components)
+                self.latent_mean.copy_(z.mean(0))
+                z = z - self.latent_mean
 
-            var = pca.explained_variance_ / np.sum(pca.explained_variance_)
-            var = np.cumsum(var)
+                print(z.shape)
 
-            self.fidelity.copy_(torch.from_numpy(var).to(self.fidelity))
+                pca = PCA(z.shape[-1]).fit(z.cpu().numpy())
 
-            var_percent = [.8, .9, .95, .99]
-            for p in var_percent:
-                self.log(f"{p}%_manifold",
-                         np.argmax(var > p).astype(np.float32))
-        
-        """
+                components = pca.components_
+                components = torch.from_numpy(components).to(z)
+                self.latent_pca.copy_(components)
 
-        y = torch.cat(audio, 0)[:64].reshape(-1)
-        self.logger.experiment.add_audio("audio_val", y,
-                                         self.saved_step.item(), self.sr)
+                var = pca.explained_variance_ / np.sum(pca.explained_variance_)
+                var = np.cumsum(var)
 
-        wandb.log({
-            f"audio_val_{self.saved_step.item():06d}":
-            wandb.Audio(y.detach().cpu().numpy(),
-                        caption="audio",
-                        sample_rate=self.sr)
-        })
+                self.fidelity.copy_(torch.from_numpy(var).to(self.fidelity))
 
-        convert = torch.cat(converted, 0)[:64].reshape(-1)
-        wandb.log({
-            f"audio_conv{self.saved_step.item():06d}":
-            wandb.Audio(convert.detach().cpu().numpy(),
-                        caption="audio",
-                        sample_rate=self.sr)
-        })
+                var_percent = [.8, .9, .95, .99]
+                for p in var_percent:
+                    self.log(f"{p}%_manifold",
+                             np.argmax(var > p).astype(np.float32))
 
-        self.idx += 1
+            """
+
+            y = torch.cat(audio, 0)[:64].reshape(-1)
+            self.logger.experiment.add_audio("audio_val", y,
+                                             self.saved_step.item(), self.sr)
+
+            wandb.log({
+                f"audio_val_{self.saved_step.item():06d}":
+                wandb.Audio(y.detach().cpu().numpy(),
+                            caption="audio",
+                            sample_rate=self.sr)
+            })
+
+            convert = torch.cat(converted, 0)[:64].reshape(-1)
+            wandb.log({
+                f"audio_conv{self.saved_step.item():06d}":
+                wandb.Audio(convert.detach().cpu().numpy(),
+                            caption="audio",
+                            sample_rate=self.sr)
+            })
+
+            self.idx += 1
+        else:
+            self.idx += 1
