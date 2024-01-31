@@ -45,13 +45,13 @@ def simple_audio_preprocess(sampling_rate, N):
             print(e)
             return None
         
-        val = int(np.ceil((len(x) / 65536)))
-        N = 65536 * val
+        val = int(np.ceil((len(x) / N)))
+        N_pad = N * val
 
-        pad = (N - (len(x) % N)) % N
+        pad = (N_pad - (len(x) % N_pad)) % N_pad
         x = np.pad(x, (0, pad))
 
-        x = x.reshape(-1, N)
+        x = x.reshape(-1, N_pad)
         return x.astype(np.float32)
 
     return preprocess
@@ -226,8 +226,8 @@ class SimpleDataset_VCTK(torch.utils.data.Dataset):
                         speaker_avg = avg_speaker_embs[speaker_id]
                         
                         o_tens = torch.tensor(o, dtype=torch.float32).to(self.device)
-                        o_resampled = resample(o_tens, self.sampling_rate, 16000)
-                        target_units = self.discrete_units.units(o_resampled.unsqueeze(0).unsqueeze(0))
+                        #o_resampled = resample(o_tens, self.sampling_rate, 16000)
+                        target_units = self.discrete_units.units(o_tens.unsqueeze(0).unsqueeze(0))
                         
                         self.env[idx] = {
                             'data_clean': o,

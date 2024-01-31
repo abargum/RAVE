@@ -617,7 +617,7 @@ class Encoder(nn.Module):
                 cumulative_delay=net[-2].cumulative_delay,
             ))
         
-        net.append(torch.nn.LayerNorm(32))
+        #net.append(torch.nn.LayerNorm(16))
 
         self.net = cc.CachedSequential(*net)
         self.cumulative_delay = self.net.cumulative_delay
@@ -688,9 +688,9 @@ class Encoder(nn.Module):
 class CrossEntropyProjection(nn.Module):
     def __init__(self):
         super().__init__()
-        self.layer_norm = torch.nn.LayerNorm(32)
+        self.layer_norm = torch.nn.LayerNorm(16)
         self.lin1 = torch.nn.Linear(64, 100)
-        self.lin2 = torch.nn.Linear(32, 136)
+        self.lin2 = torch.nn.Linear(16, 102)
         #self.logistic_projection = torch.nn.Linear(32, 100)
         self.softmax = torch.nn.Softmax()
         
@@ -809,7 +809,7 @@ class RAVE(pl.LightningModule):
         encoder_out_size = cropped_latent_size if cropped_latent_size else latent_size
 
         self.encoder = Encoder(
-            5,
+            data_size,
             capacity,
             encoder_out_size,
             ratios,
@@ -992,7 +992,7 @@ class RAVE(pl.LightningModule):
         # SPEAKER EMBEDDING AND PITCH EXCITATION
         sp = batch['speaker_emb']
         sp = self.speaker_projection(sp)
-        sp = torch.permute(sp.unsqueeze(1).repeat(1, 32, 1), (0, 2, 1))
+        sp = torch.permute(sp.unsqueeze(1).repeat(1, 16, 1), (0, 2, 1))
 
         # --------------------------------------
 
@@ -1010,7 +1010,7 @@ class RAVE(pl.LightningModule):
 
         # ENCODE INPUT
         #z_init_1, kl = self.reparametrize(*self.encoder(x_clean[:, :5, :]))
-        z_init_1 = self.encoder(x_perturb[:, :5, :])
+        z_init_1 = self.encoder(x_perturb)
         kl = 0
         p.tick("encode")
 
@@ -1220,7 +1220,7 @@ class RAVE(pl.LightningModule):
 
         # SPEAKER EMBEDDING AND PITCH EXCITATION
         sp = self.speaker_projection(sp)
-        sp = torch.permute(sp.unsqueeze(1).repeat(1, 32, 1), (0, 2, 1))
+        sp = torch.permute(sp.unsqueeze(1).repeat(1, 16, 1), (0, 2, 1))
         
         x = x.unsqueeze(1)
         
@@ -1244,7 +1244,7 @@ class RAVE(pl.LightningModule):
         # SPEAKER EMBEDDING AND PITCH EXCITATION
         sp = batch['speaker_emb']
         sp = self.speaker_projection(sp)
-        sp = torch.permute(sp.unsqueeze(1).repeat(1, 32, 1), (0, 2, 1))
+        sp = torch.permute(sp.unsqueeze(1).repeat(1, 16, 1), (0, 2, 1))
 
         # --------------------------------------
 
@@ -1255,7 +1255,7 @@ class RAVE(pl.LightningModule):
 
         #mean, scale = self.encoder(x_clean[:, :5, :])
         #z, _ = self.reparametrize(mean, scale)
-        z = self.encoder(x_clean[:, :5, :])
+        z = self.encoder(x_clean)
 
         z = torch.cat((z, sp), 1)
         y = self.decoder(z, add_noise=self.warmed_up)
@@ -1273,7 +1273,7 @@ class RAVE(pl.LightningModule):
         #FOR CONVERSION
         speaker_emb_avg = batch['speaker_id_avg']
         speaker_emb_avg = self.speaker_projection(speaker_emb_avg)
-        speaker_emb_avg = torch.permute(speaker_emb_avg.unsqueeze(1).repeat(1, 32, 1), (0, 2, 1))
+        speaker_emb_avg = torch.permute(speaker_emb_avg.unsqueeze(1).repeat(1, 16, 1), (0, 2, 1))
 
         input_index = 0
         target_index = 1
@@ -1287,7 +1287,7 @@ class RAVE(pl.LightningModule):
 
         #mean, scale = self.encoder(input_conversion[:, :5, :])
         #z, _ = self.reparametrize(mean, scale)
-        z = self.encoder(input_conversion[:, :5, :])
+        z = self.encoder(input_conversion)
 
         z = torch.cat((z, target_embedding), 1)
         converted = self.decoder(z, add_noise=self.warmed_up)

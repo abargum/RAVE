@@ -58,14 +58,14 @@ if __name__ == "__main__":
         D_MULTIPLIER = 4
         D_N_LAYERS = 4
 
-        WARMUP = setting(default=1, small=1000000, large=3000000)
+        WARMUP = setting(default=1000, small=1000000, large=3000000)
         MODE = "hinge"
         CKPT = None
 
         PREPROCESSED = None
         WAV = None
-        SR = 48000
-        N_SIGNAL = 65536
+        SR = 16000
+        N_SIGNAL = 32768
         MAX_STEPS = setting(default=6000000, small=3000000, large=6000000)
         VAL_EVERY = 10000
         BLOCK_SIZE = 128
@@ -124,9 +124,9 @@ if __name__ == "__main__":
     else:
         speaker_size = 192
 
-    x = {'data_clean': torch.zeros(args.BATCH, 2**16),
-        'data_perturbed_1': torch.zeros(args.BATCH, 2**16),
-        'data_perturbed_2': torch.zeros(args.BATCH, 2**16),
+    x = {'data_clean': torch.zeros(args.BATCH, 2**15),
+        'data_perturbed_1': torch.zeros(args.BATCH, 2**15),
+        'data_perturbed_2': torch.zeros(args.BATCH, 2**15),
         'speaker_emb': torch.zeros(args.BATCH, speaker_size),
         'speaker_id_avg': torch.zeros(args.BATCH, speaker_size)}
     
@@ -134,7 +134,7 @@ if __name__ == "__main__":
 
     preprocess = lambda name: simple_audio_preprocess(
         args.SR,
-        2 * args.N_SIGNAL,
+        args.N_SIGNAL,
     )(name).astype(np.float16)
 
     dataset = SimpleDataset(
@@ -147,7 +147,6 @@ if __name__ == "__main__":
         split_set="full",
         transforms=Perturb([
             lambda x, x_p_1: (x.astype(np.float32), x_p_1.astype(np.float32)),
-            RandomCrop(args.N_SIGNAL),
             RandomApply(
                 lambda x: random_phase_mangle(x, 20, 2000, .99, args.SR),
                 p=.8,
