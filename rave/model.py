@@ -13,12 +13,14 @@ from torch.nn import Conv1d, ConvTranspose1d, AvgPool1d, Conv2d
 from torch.nn.utils import weight_norm, remove_weight_norm, spectral_norm
 import torch.nn.functional as F
 from typing import Tuple
+import math
 
 from time import time
 
 import cached_conv as cc
 
 from .excitation import ExcitationModule, get_pitch, get_rms_val, upsample
+from .stft_loss import MultiResolutionSTFTLoss
 
 import wandb
 import torchyin
@@ -886,6 +888,15 @@ class RAVE(pl.LightningModule):
         self.contrastive = contrastive_loss
         self.content = content_loss
 
+        resolutions = []
+        for hop_length_ms, win_length_ms in eval("[(5, 25), (10, 50), (2, 10)]"):
+            hop_length = int(0.001 * hop_length_ms * self.sr)
+            win_length = int(0.001 * win_length_ms * self.sr)
+            n_fft = int(math.pow(2, int(math.log2(win_length)) + 1))
+            resolutions.append((n_fft, hop_length, win_length))
+
+        self.stft_criterion = MultiResolutionSTFTLoss(self.device, resolutions)
+
     def configure_optimizers(self):
         
         #enc_p = list(self.encoder.parameters())
@@ -987,6 +998,7 @@ class RAVE(pl.LightningModule):
         self.saved_step += 1
 
         gen_opt, dis_opt = self.optimizers()
+
         x = batch['data_clean']
 
         # SPEAKER EMBEDDING AND PITCH EXCITATION
@@ -1049,7 +1061,8 @@ class RAVE(pl.LightningModule):
             content_loss = 0
 
         # DISTANCE BETWEEN INPUT AND OUTPUT
-        distance = self.distance(x_clean, y_pqmf)
+        #distance = self.distance(x_clean, y_pqmf)
+        #print(distance)
         p.tick("mb distance")
         
         if self.contrastive:
@@ -1067,45 +1080,48 @@ class RAVE(pl.LightningModule):
         if self.pqmf is not None:  # FULL BAND RECOMPOSITION
             x_clean = self.pqmf.inverse(x_clean)
             y = self.pqmf.inverse(y_pqmf)
-            distance = distance + self.distance(x_clean, y)
+            sc_loss, mag_loss = self.stft_criterion(y.squeeze(1), x_clean.squeeze(1))
+            distance = (sc_loss + mag_loss) * 2.5
+            #print(new_dis)
+            #distance = distance + new_dis #self.distance(x_clean, y)
             p.tick("fb distance")
 
         loud_x = self.loudness(x_clean)
         loud_y = self.loudness(y)
         loud_dist = (loud_x - loud_y).pow(2).mean()
-        distance = distance + loud_dist
+        distance = distance #+ loud_dist
         p.tick("loudness distance")
 
-        if self.warmed_up:
-            # MRD, MPD losses.
-            res_fake, period_fake = self.discriminator(y)
+        CE_loss = torch.nn.functional.cross_entropy(predicted_units, batch['discrete_units_16k'].type(torch.int64))
 
-            # Compute LSGAN loss for all frames.
-            loss_adv = 0.0
-            for (_, score_fake) in res_fake + period_fake:
-                loss_adv += torch.mean(torch.pow(score_fake - 1.0, 2))
+        # MRD, MPD losses.
+        res_fake, period_fake = self.discriminator(y)
 
-            # Average across frames.
-            loss_adv = loss_adv / len(res_fake + period_fake)
+        # Compute LSGAN loss for all frames.
+        loss_adv = 0.0
+        for (_, score_fake) in res_fake + period_fake:
+            loss_adv += torch.mean(torch.pow(score_fake - 1.0, 2))
 
-            # MRD, MPD losses.
-            res_fake, period_fake = self.discriminator(y.detach())  # fake audio from generator
-            res_real, period_real = self.discriminator(x_clean)  # real audio
+        # Average across frames.
+        loss_adv = loss_adv / len(res_fake + period_fake)
+        
+        # Overall generator loss (L_G).
+        loss_gen = loss_adv + distance + CE_loss
 
-            # Compute LSGAN loss for all frames.
-            loss_dis = 0.0
-            for (_, score_fake), (_, score_real) in zip(
-                res_fake + period_fake, res_real + period_real
-            ):
-                loss_dis += torch.mean(torch.pow(score_real - 1.0, 2))
-                loss_dis += torch.mean(torch.pow(score_fake, 2))
+        # MRD, MPD losses.
+        res_fake, period_fake = self.discriminator(y.detach())  # fake audio from generator
+        res_real, period_real = self.discriminator(x_clean)  # real audio
 
-            # Compute average to get overall discriminator loss (L_D).
-            loss_dis = loss_dis / len(res_fake + period_fake)
+        # Compute LSGAN loss for all frames.
+        loss_dis = 0.0
+        for (_, score_fake), (_, score_real) in zip(
+            res_fake + period_fake, res_real + period_real
+        ):
+            loss_dis += torch.mean(torch.pow(score_real - 1.0, 2))
+            loss_dis += torch.mean(torch.pow(score_fake, 2))
 
-        else:
-            loss_adv = 0
-            loss_dis = 0
+        # Compute average to get overall discriminator loss (L_D).
+        loss_dis = loss_dis / len(res_fake + period_fake)
 
         # feature_matching_distance = 0.
         # if self.warmed_up:  # DISCRIMINATION
@@ -1153,31 +1169,20 @@ class RAVE(pl.LightningModule):
         #     max_beta=self.max_kl,
         # )
 
-        CE_loss = torch.nn.functional.cross_entropy(predicted_units, batch['discrete_units_16k'].type(torch.int64))
-        loss_gen = distance + loss_adv + CE_loss * 2 #+ beta * kl + contrastrive_loss * self.contr_coeff + content_loss
+        # CE_loss = torch.nn.functional.cross_entropy(predicted_units, batch['discrete_units_16k'].type(torch.int64))
+        # loss_gen = distance + loss_adv + CE_loss * 2 #+ beta * kl + contrastrive_loss * self.contr_coeff + content_loss
         # if self.feature_match:
         #     loss_gen = loss_gen + feature_matching_distance
         p.tick("gen loss compose")
 
-        if self.global_step % 2 and self.warmed_up:
+        if self.global_step % 2:
             dis_opt.zero_grad()
             loss_dis.backward()
             dis_opt.step()
         else:
-            #RETAIN GRAPH AND ENC.OPT IS MESSING UP THE DISCRIMINATOR!!!
-            if not self.warmed_up:
-                gen_opt.zero_grad()
-                loss_gen.backward()
-                gen_opt.step()
-
-                #enc_opt.zero_grad()
-                #CE_loss = torch.nn.functional.cross_entropy(predicted_units, batch['discrete_units_16k'].type(torch.int64))
-                #CE_loss.backward()
-                #enc_opt.step()
-            else:
-                gen_opt.zero_grad()
-                loss_gen.backward()
-                gen_opt.step()
+            gen_opt.zero_grad()
+            loss_gen.backward()
+            gen_opt.step()
     
         p.tick("optimization")
 
