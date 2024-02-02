@@ -895,7 +895,7 @@ class RAVE(pl.LightningModule):
             n_fft = int(math.pow(2, int(math.log2(win_length)) + 1))
             resolutions.append((n_fft, hop_length, win_length))
 
-        self.stft_criterion = MultiResolutionSTFTLoss(self.device, resolutions)
+        self.stft_criterion = MultiResolutionSTFTLoss(self.device, resolutions).to(self.device)
 
     def configure_optimizers(self):
         
