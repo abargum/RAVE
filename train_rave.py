@@ -58,7 +58,7 @@ if __name__ == "__main__":
         D_MULTIPLIER = 4
         D_N_LAYERS = 4
 
-        WARMUP = setting(default=1000000, small=1000000, large=3000000)
+        WARMUP = setting(default=1000, small=1000000, large=3000000)
         MODE = "hinge"
         CKPT = None
 
@@ -134,7 +134,7 @@ if __name__ == "__main__":
 
     preprocess = lambda name: simple_audio_preprocess(
         args.SR,
-        2 * args.N_SIGNAL,
+        args.N_SIGNAL,
     )(name).astype(np.float16)
 
     dataset = SimpleDataset(
@@ -146,14 +146,14 @@ if __name__ == "__main__":
         preprocess_function=preprocess,
         split_set="full",
         transforms=Perturb([
-            lambda x: (x.astype(np.float32)),
-            RandomCrop(args.N_SIGNAL),
+            lambda x, x_p_1: (x.astype(np.float32), x_p_1.astype(np.float32)),
+            #RandomCrop(args.N_SIGNAL),
             RandomApply(
                 lambda x: random_phase_mangle(x, 20, 2000, .99, args.SR),
                 p=.8,
             ),
             Dequantize(16),
-            lambda x: (x.astype(np.float32)),
+            lambda x, x_p_1: (x.astype(np.float32), x_p_1.astype(np.float32)),
         ],
         args.SR),
     )

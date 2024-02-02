@@ -40,10 +40,11 @@ class RandomApply(Transform):
         self.transform = transform
         self.p = p
 
-    def __call__(self, x: np.ndarray):
+    def __call__(self, x: np.ndarray, x_p_1: np.ndarray):
         if random() < self.p:
             x = self.transform(x)
-        return x
+            x_p_1 = self.transform(x_p_1)
+        return x, x_p_1
 
 
 class Compose(Transform):
@@ -66,23 +67,23 @@ class Perturb(Transform):
     """
 
     def __init__(self, transform_list, sr):
-        #self.peq_1 = PEQ(sr)
-        #self.p_and_f_1 = FormantPitchShift(sr)
+        self.peq_1 = PEQ(sr)
+        self.p_and_f_1 = FormantPitchShift(sr)
         #self.peq_2 = PEQ(sr)
         #self.p_and_f_2 = FormantPitchShift(sr)
 
         self.transform_list = transform_list
 
     def __call__(self, x: np.ndarray):
-        #x_p_1 = self.peq_1(x)
-        #x_p_1 = self.p_and_f_1(x_p_1)
+        x_p_1 = self.peq_1(x)
+        x_p_1 = self.p_and_f_1(x_p_1)
 
         #x_p_2 = self.peq_2(x)
         #x_p_2 = self.p_and_f_2(x_p_2)
 
         for elm in self.transform_list:
-            x = elm(x)
-        return x
+            x, x_p_1 = elm(x, x_p_1)
+        return x, x_p_1
 
 
 class RandomChoice(Transform):
@@ -119,9 +120,10 @@ class Dequantize(Transform):
     def __init__(self, bit_depth):
         self.bit_depth = bit_depth
 
-    def __call__(self, x: np.ndarray):
+    def __call__(self, x: np.ndarray, x_p_1: np.ndarray):
         rand = np.random.rand(len(x)) 
         
         x += rand / 2**self.bit_depth
+        x_p_1 += rand / 2**self.bit_depth
 
-        return x
+        return x, x_p_1
