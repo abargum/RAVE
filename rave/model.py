@@ -1007,8 +1007,13 @@ class RAVE(pl.LightningModule):
 
         # ENCODE INPUT
         #z_init_1, kl = self.reparametrize(*self.encoder(x_clean[:, :5, :]))
+<<<<<<< HEAD
         z_init_1 = self.encoder(x_perturb[:, :5, :])
         kl = 0
+=======
+        z_init_1 = self.encoder(x_clean[:, :5, :])
+        #kl = 0
+>>>>>>> 9df3c93cc5fc55d2c63e231ca40c668a043e83ad
         p.tick("encode")
 
         #if self.warmed_up:  # FREEZE ENCODER
@@ -1222,10 +1227,10 @@ class RAVE(pl.LightningModule):
         if self.pqmf is not None:
             x_clean = self.pqmf(x_clean)
 
-        #mean, scale = self.encoder(x_clean[:, :5, :])
-        #z, _ = self.reparametrize(mean, scale)
+        mean, scale = self.encoder(x_clean[:, :5, :])
+        z, _ = self.reparametrize(mean, scale)
         
-        z = self.encoder(x_clean[:, :5, :])
+        #z = self.encoder(x_clean[:, :5, :])
 
         z = torch.cat((z, sp), 1)
         y = self.decoder(z, add_noise=self.warmed_up)
@@ -1255,9 +1260,9 @@ class RAVE(pl.LightningModule):
         if self.pqmf is not None:
             input_conversion = self.pqmf(input_conversion)
 
-        #mean, scale = self.encoder(input_conversion[:, :5, :])
-        #z, _ = self.reparametrize(mean, scale)
-        z = self.encoder(input_conversion[:, :5, :])
+        mean, scale = self.encoder(input_conversion[:, :5, :])
+        z, _ = self.reparametrize(mean, scale)
+        #z = self.encoder(input_conversion[:, :5, :])
 
         z = torch.cat((z, target_embedding), 1)
         converted = self.decoder(z, add_noise=self.warmed_up)

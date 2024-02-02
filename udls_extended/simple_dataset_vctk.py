@@ -45,13 +45,13 @@ def simple_audio_preprocess(sampling_rate, N):
             print(e)
             return None
         
-        val = int(np.ceil((len(x) / 65536)))
-        N = 65536 * val
+        val = int(np.ceil((len(x) / N)))
+        N_pad = N * val
 
-        pad = (N - (len(x) % N)) % N
+        pad = (N_pad - (len(x) % N_pad)) % N_pad
         x = np.pad(x, (0, pad))
 
-        x = x.reshape(-1, N)
+        x = x.reshape(-1, N_pad)
         return x.astype(np.float32)
 
     return preprocess
@@ -247,11 +247,11 @@ class SimpleDataset_VCTK(torch.utils.data.Dataset):
         data = self.env[self.index[index + self.offset]]
 
         if self.transforms is not None:
-            data_clean = self.transforms(data['data_clean'])
+            data_clean, data_perturbed_1 = self.transforms(data['data_clean'])
 
         return {
             'data_clean': data_clean.astype(np.float32),
-            #'data_perturbed_1': data_perturbed_1.astype(np.float32),
+            'data_perturbed_1': data_perturbed_1.astype(np.float32),
             #'data_perturbed_2': data_perturbed_2.astype(np.float32),
             'speaker_emb': data['speaker_emb'].astype(np.float32),
             'speaker_id': data['speaker_id'],
