@@ -101,7 +101,7 @@ class SimpleDataset_VCTK(torch.utils.data.Dataset):
         
         self.discrete_units = torch.hub.load("bshall/hubert:main",f"hubert_discrete", trust_repo=True).cuda()
 
-        # IF NO DATA INSIDE DATASET: PREPROCESS
+        # IF NO DATA INSIDE DATASET: PREPROCESS
         self.len = len(self.env)
 
         if self.len == 0:
