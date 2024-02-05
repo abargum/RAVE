@@ -1010,58 +1010,9 @@ class RAVE(pl.LightningModule):
         x_clean = x.unsqueeze(1)
         x_perturb =  batch['data_perturbed_1'].unsqueeze(1)
         
-        if self.pqmf is not None:  # MULTIBAND DECOMPOSITION
-            x_clean = self.pqmf(x_clean)
-            x_perturb = self.pqmf(x_perturb)
-            p.tick("pqmf")
-
-        #if self.warmed_up:  # EVAL ENCODER
-        #    self.encoder.eval()
-        #    self.CE_projection.eval()
-
-        # ENCODE INPUT
-        z_init_1 = self.encoder(x_perturb)
-        kl = 0
-        p.tick("encode")
-            
-        predicted_units = self.CE_projection(z_init_1)
-        z = torch.cat((z_init_1, sp), 1)
-
-        # DECODE LATENT
-        y_pqmf = self.decoder(z, add_noise=self.warmed_up)
-        p.tick("decode")
-        
-        # CONTENT OF RECONSTRUCTED (Y)
-        if self.content:
-            with torch.no_grad():
-                #y_enc, _ = self.reparametrize(*self.encoder(y_pqmf[:, :5, :]))
-                y_enc, _ = self.encoder(y_pqmf[:, :5, :])
-            content_loss = torch.nn.functional.l1_loss(z_init_1, y_enc) * 7.5
-        else:
-            content_loss = 0
-
-        # DISTANCE BETWEEN INPUT AND OUTPUT
-        distance = self.distance(x_clean, y_pqmf)
-        #print(distance)
-        p.tick("mb distance")
-        
-        if self.contrastive:
-            if self.warmed_up:
-                contrastrive_loss = 0
-                mean_positive = 0
-                mean_negative = 0
-            else:
-                contrastrive_loss, mean_positive, mean_negative = self.contr_loss(z_init_1, z_init_2)
-        else:
-            contrastrive_loss = 0
-            mean_positive = 0
-            mean_negative = 0
-
         if self.pqmf is not None:  # FULL BAND RECOMPOSITION
             x_clean = self.pqmf.inverse(x_clean)
             y = self.pqmf.inverse(y_pqmf)
-            #sc_loss, mag_loss = self.stft_criterion(y.squeeze(1), x_clean.squeeze(1))
-            #distance = (sc_loss + mag_loss) * 2.5
             distance = distance + self.distance(x_clean, y)
             p.tick("fb distance")
 
@@ -1071,38 +1022,6 @@ class RAVE(pl.LightningModule):
         distance = distance + loud_dist
         p.tick("loudness distance")
 
-        CE_loss = torch.nn.functional.cross_entropy(predicted_units, batch['discrete_units_16k'].type(torch.int64))
-        
-        """
-        # MRD, MPD losses.
-        res_fake, period_fake = self.discriminator(y)
-
-        # Compute LSGAN loss for all frames.
-        loss_adv = 0.0
-        for (_, score_fake) in res_fake + period_fake:
-            loss_adv += torch.mean(torch.pow(score_fake - 1.0, 2))
-
-        # Average across frames.
-        loss_adv = loss_adv / len(res_fake + period_fake)
-        
-        # Overall generator loss (L_G).
-        loss_gen = loss_adv + distance + CE_loss
-
-        # MRD, MPD losses.
-        res_fake, period_fake = self.discriminator(y.detach())  # fake audio from generator
-        res_real, period_real = self.discriminator(x_clean)  # real audio
-
-        # Compute LSGAN loss for all frames.
-        loss_dis = 0.0
-        for (_, score_fake), (_, score_real) in zip(
-            res_fake + period_fake, res_real + period_real
-        ):
-            loss_dis += torch.mean(torch.pow(score_real - 1.0, 2))
-            loss_dis += torch.mean(torch.pow(score_fake, 2))
-
-        # Compute average to get overall discriminator loss (L_D).
-        loss_dis = loss_dis / len(res_fake + period_fake) """
-        
         feature_matching_distance = 0.
         if self.warmed_up:  # DISCRIMINATION
             feature_true = self.rave_discriminator(x_clean)
@@ -1140,30 +1059,30 @@ class RAVE(pl.LightningModule):
             loss_dis = torch.tensor(0.).to(x_clean)
             loss_adv = torch.tensor(0.).to(x_clean)
 
-
         # COMPOSE GEN LOSS
-        # beta = get_beta_kl_cyclic_annealed(
-        #     step=self.global_step,
-        #     cycle_size=5e4,
-        #     warmup=self.warmup // 2,
-        #     min_beta=self.min_kl,
-        #     max_beta=self.max_kl,
-        # )
-
-        # CE_loss = torch.nn.functional.cross_entropy(predicted_units, batch['discrete_units_16k'].type(torch.int64))
-        # loss_gen = distance + loss_adv + CE_loss * 2 #+ beta * kl + contrastrive_loss * self.contr_coeff + content_loss
-        # if self.feature_match:
-        #     loss_gen = loss_gen + feature_matching_distance
+        beta = get_beta_kl_cyclic_annealed(
+            step=self.global_step,
+            cycle_size=5e4,
+            warmup=self.warmup // 2,
+            min_beta=self.min_kl,
+            max_beta=self.max_kl,
+        )
         
-        loss_gen = loss_adv + feature_matching_distance + distance + CE_loss
+        CE_loss = torch.nn.functional.cross_entropy(predicted_units, batch['discrete_units_16k'].type(torch.int64))
         
+        loss_gen = distance + loss_adv + CE_loss #+ beta * kl + contrastrive_loss * self.contr_coeff + content_loss
+        
+        if self.feature_match:
+            loss_gen = loss_gen + feature_matching_distance
         p.tick("gen loss compose")
 
+        # OPTIMIZATION
         if self.global_step % 2 and self.warmed_up:
             dis_opt.zero_grad()
             loss_dis.backward()
             dis_opt.step()
         else:
+            #en_opt.zero_grad()
             gen_opt.zero_grad()
             loss_gen.backward()
             gen_opt.step()
