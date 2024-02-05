@@ -1041,7 +1041,7 @@ class RAVE(pl.LightningModule):
             content_loss = 0
 
         # DISTANCE BETWEEN INPUT AND OUTPUT
-        #distance = self.distance(x_clean, y_pqmf)
+        distance = self.distance(x_clean, y_pqmf)
         #print(distance)
         p.tick("mb distance")
         
@@ -1060,14 +1060,15 @@ class RAVE(pl.LightningModule):
         if self.pqmf is not None:  # FULL BAND RECOMPOSITION
             x_clean = self.pqmf.inverse(x_clean)
             y = self.pqmf.inverse(y_pqmf)
-            sc_loss, mag_loss = self.stft_criterion(y.squeeze(1), x_clean.squeeze(1))
-            distance = (sc_loss + mag_loss) * 2.5
+            #sc_loss, mag_loss = self.stft_criterion(y.squeeze(1), x_clean.squeeze(1))
+            #distance = (sc_loss + mag_loss) * 2.5
+            distance = distance + self.distance(x_clean, y)
             p.tick("fb distance")
 
         loud_x = self.loudness(x_clean)
         loud_y = self.loudness(y)
         loud_dist = (loud_x - loud_y).pow(2).mean()
-        distance = distance #+ loud_dist
+        distance = distance + loud_dist
         p.tick("loudness distance")
 
         CE_loss = torch.nn.functional.cross_entropy(predicted_units, batch['discrete_units_16k'].type(torch.int64))
@@ -1158,7 +1159,7 @@ class RAVE(pl.LightningModule):
         
         p.tick("gen loss compose")
 
-        if self.global_step % 2:
+        if self.global_step % 2 and self.warmed_up:
             dis_opt.zero_grad()
             loss_dis.backward()
             dis_opt.step()
@@ -1194,9 +1195,9 @@ class RAVE(pl.LightningModule):
             "mean_negative": mean_negative,
             "content": content_loss,
             "CE": CE_loss,
-            "loss_adv": loss_adv,
-            "loss_dis_rave": loss_dis2,
-            "loss_adv_rave": loss_adv2,
+            #"loss_adv": loss_adv,
+            #"loss_dis_rave": loss_dis2,
+            #"loss_adv_rave": loss_adv2,
             #"content_loss": content_loss
         })
         
