@@ -77,8 +77,6 @@ if __name__ == "__main__":
         CONTENT_LOSS = False
 
         NAME = None
-        
-        PLOT = False
 
     args.parse_args()
 
@@ -156,43 +154,6 @@ if __name__ == "__main__":
         ],
         args.SR),
     )
-    
-    # -------------- PLOT SPEAKER EMBEDDINGS ----------------
-    if args.PLOT:
-        speaker_E = []
-        speaker_ID = []
-
-        for i, entry in enumerate(dataset):
-            if i < 250:
-                speaker_E.append(entry['speaker_emb'])
-                speaker_ID.append(entry['speaker_id'])
-            else:
-                break
-
-        pca = PCA(n_components=2)
-        components = pca.fit_transform(np.array(speaker_E))
-
-        fig, ax = plt.subplots()
-
-        # Create a dictionary to map unique speaker IDs to colors
-        unique_speakers = list(set(speaker_ID))
-        colors = plt.cm.get_cmap('tab10', len(unique_speakers))
-        color_dict = {speaker: colors(i) for i, speaker in enumerate(unique_speakers)}
-
-        # Scatter plot with different colors for each speaker ID
-        for i, speaker in enumerate(unique_speakers):
-            indices = [j for j, s in enumerate(speaker_ID) if s == speaker]
-            ax.scatter(components[indices, 0], components[indices, 1], label=speaker, color=color_dict[speaker])
-
-        # Display a legend outside the plot
-        ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-
-        plt.xlabel('Principal Component 1')
-        plt.ylabel('Principal Component 2')
-
-        plt.savefig('scatter_plot_embeddings.png', bbox_inches='tight')
-            
-        # ---------------------------------------------------
 
     val = max((2 * len(dataset)) // 500, 1)
     train = len(dataset) - val

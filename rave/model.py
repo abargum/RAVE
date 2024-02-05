@@ -1232,9 +1232,9 @@ class RAVE(pl.LightningModule):
         if self.pqmf is not None:
             x = self.pqmf(x)
 
-        z = self.encoder(x_clean[:, :5, :])
+        z = self.encoder(x)
         
-        return z, torch.cat((z, sp), 1)
+        return z, torch.cat((z, sp), 1), sp
 
     def decode(self, z):
         y = self.decoder(z, add_noise=True)
@@ -1307,10 +1307,11 @@ class RAVE(pl.LightningModule):
 
     def validation_epoch_end(self, out):
         if len(out) != 0:
-           audio, z, converted = list(zip(*out))
+            audio, z, converted = list(zip(*out))
 
-           if self.saved_step > self.warmup:
-              self.warmed_up = True
+            if self.saved_step > self.warmup:
+                self.warmed_up = True
+        
         """
         # LATENT SPACE ANALYSIS
         if not self.warmed_up:
@@ -1340,25 +1341,25 @@ class RAVE(pl.LightningModule):
         
         """
         if len(out) != 0:
-           y = torch.cat(audio, 0)[:64].reshape(-1)
-           self.logger.experiment.add_audio("audio_val", y,
+            y = torch.cat(audio, 0)[:64].reshape(-1)
+            self.logger.experiment.add_audio("audio_val", y,
                                          self.saved_step.item(), self.sr)
 
-           wandb.log({f"audio_val_{self.saved_step.item():06d}":
+            wandb.log({f"audio_val_{self.saved_step.item():06d}":
                         wandb.Audio(y.detach().cpu().numpy(),
                         caption="audio",
                         sample_rate=self.sr)
            })
 
-           convert = torch.cat(converted, 0)[:64].reshape(-1)
-           wandb.log({
+            convert = torch.cat(converted, 0)[:64].reshape(-1)
+            wandb.log({
                 f"audio_conv{self.saved_step.item():06d}":
            wandb.Audio(convert.detach().cpu().numpy(),
                         caption="audio",
                         sample_rate=self.sr)
            })
 
-           self.idx += 1
+            self.idx += 1
 
         if len(out) == 0:
-           self.idx += 1
+            self.idx += 1
