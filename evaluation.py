@@ -99,7 +99,7 @@ dataset = SimpleDataset(
         preprocess_function=preprocess,
         split_set="full",
         transforms=Perturb([
-            lambda x: (x.astype(np.float32)),
+            lambda x, x1: (x.astype(np.float32), x1.astype(np.float32)),
         ],
         48000))
 
@@ -108,10 +108,10 @@ p225_entry = get_entries_by_id(dataset, 'p225')
 dataset_embeddings.append(p225_entry)
 p226_entry = get_entries_by_id(dataset, 'p226')
 dataset_embeddings.append(p226_entry)
+p227_entry = get_entries_by_id(dataset, 'p227')
+dataset_embeddings.append(p227_entry)
 p228_entry = get_entries_by_id(dataset, 'p228')
 dataset_embeddings.append(p228_entry)
-p237_entry = get_entries_by_id(dataset, 'p237')
-dataset_embeddings.append(p237_entry)
 
 #for i in range(len(dataset)):
 #    print("IDs:", dataset[i]['speaker_id'])
