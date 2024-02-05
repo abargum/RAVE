@@ -690,9 +690,9 @@ class StackDiscriminators(nn.Module):
 class CrossEntropyProjection(nn.Module):
     def __init__(self):
         super().__init__()
-        self.layer_norm = torch.nn.LayerNorm(16)
+        self.layer_norm = torch.nn.LayerNorm(32)
         self.lin1 = torch.nn.Linear(64, 100)
-        self.lin2 = torch.nn.Linear(16, 102)
+        self.lin2 = torch.nn.Linear(32, 102)
         #self.logistic_projection = torch.nn.Linear(32, 100)
         self.softmax = torch.nn.Softmax()
         
@@ -1003,7 +1003,7 @@ class RAVE(pl.LightningModule):
         # SPEAKER EMBEDDING AND PITCH EXCITATION
         sp = batch['speaker_emb']
         sp = self.speaker_projection(sp)
-        sp = torch.permute(sp.unsqueeze(1).repeat(1, 16, 1), (0, 2, 1))
+        sp = torch.permute(sp.unsqueeze(1).repeat(1, 32, 1), (0, 2, 1))
 
         # --------------------------------------
 
@@ -1131,7 +1131,7 @@ class RAVE(pl.LightningModule):
 
         # SPEAKER EMBEDDING AND PITCH EXCITATION
         sp = self.speaker_projection(sp)
-        sp = torch.permute(sp.unsqueeze(1).repeat(1, 16, 1), (0, 2, 1))
+        sp = torch.permute(sp.unsqueeze(1).repeat(1, 32, 1), (0, 2, 1))
         
         x = x.unsqueeze(1)
         
@@ -1155,7 +1155,7 @@ class RAVE(pl.LightningModule):
         # SPEAKER EMBEDDING AND PITCH EXCITATION
         sp = batch['speaker_emb']
         sp = self.speaker_projection(sp)
-        sp = torch.permute(sp.unsqueeze(1).repeat(1, 16, 1), (0, 2, 1))
+        sp = torch.permute(sp.unsqueeze(1).repeat(1, 32, 1), (0, 2, 1))
 
         # --------------------------------------
 
@@ -1184,7 +1184,7 @@ class RAVE(pl.LightningModule):
         #FOR CONVERSION
         speaker_emb_avg = batch['speaker_id_avg']
         speaker_emb_avg = self.speaker_projection(speaker_emb_avg)
-        speaker_emb_avg = torch.permute(speaker_emb_avg.unsqueeze(1).repeat(1, 16, 1), (0, 2, 1))
+        speaker_emb_avg = torch.permute(speaker_emb_avg.unsqueeze(1).repeat(1, 32, 1), (0, 2, 1))
 
         input_index = 0
         target_index = 1
