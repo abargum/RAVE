@@ -629,64 +629,64 @@ class Encoder(nn.Module):
         return z #torch.split(z, z.shape[1] // 2, 1)
 
 
-# class Discriminator(nn.Module):
-#     def __init__(self, in_size, capacity, multiplier, n_layers):
-#         super().__init__()
+class RaveDiscriminator(nn.Module):
+    def __init__(self, in_size, capacity, multiplier, n_layers):
+        super().__init__()
+        
+        net = [
+             wn(cc.Conv1d(in_size, capacity, 15, padding=cc.get_padding(15)))
+        ]
+        
+        net.append(nn.LeakyReLU(.2))
+        
+        for i in range(n_layers):
+             net.append(
+                 wn(
+                     cc.Conv1d(
+                         capacity * multiplier**i,
+                         min(1024, capacity * multiplier**(i + 1)),
+                         41,
+                         stride=multiplier,
+                         padding=cc.get_padding(41, multiplier),
+                         groups=multiplier**(i + 1),
+                     )))
+        net.append(nn.LeakyReLU(.2))
 
-#         net = [
-#             wn(cc.Conv1d(in_size, capacity, 15, padding=cc.get_padding(15)))
-#         ]
-#         net.append(nn.LeakyReLU(.2))
+        net.append(
+            wn(
+                cc.Conv1d(
+                     min(1024, capacity * multiplier**(i + 1)),
+                     min(1024, capacity * multiplier**(i + 1)),
+                     5,
+                     padding=cc.get_padding(5),
+                 )))
+        net.append(nn.LeakyReLU(.2))
+        net.append(
+             wn(cc.Conv1d(min(1024, capacity * multiplier**(i + 1)), 1, 1)))
+        self.net = nn.ModuleList(net)
 
-#         for i in range(n_layers):
-#             net.append(
-#                 wn(
-#                     cc.Conv1d(
-#                         capacity * multiplier**i,
-#                         min(1024, capacity * multiplier**(i + 1)),
-#                         41,
-#                         stride=multiplier,
-#                         padding=cc.get_padding(41, multiplier),
-#                         groups=multiplier**(i + 1),
-#                     )))
-#             net.append(nn.LeakyReLU(.2))
-
-#         net.append(
-#             wn(
-#                 cc.Conv1d(
-#                     min(1024, capacity * multiplier**(i + 1)),
-#                     min(1024, capacity * multiplier**(i + 1)),
-#                     5,
-#                     padding=cc.get_padding(5),
-#                 )))
-#         net.append(nn.LeakyReLU(.2))
-#         net.append(
-#             wn(cc.Conv1d(min(1024, capacity * multiplier**(i + 1)), 1, 1)))
-#         self.net = nn.ModuleList(net)
-
-#     def forward(self, x):
-#         feature = []
-#         for layer in self.net:
-#             x = layer(x)
-#             if isinstance(layer, nn.Conv1d):
-#                 feature.append(x)
-#         return feature
+    def forward(self, x):
+        feature = []
+        for layer in self.net:
+            x = layer(x)
+            if isinstance(layer, nn.Conv1d):
+                feature.append(x)
+        return feature
 
 
-# class StackDiscriminators(nn.Module):
-#     def __init__(self, n_dis, *args, **kwargs):
-#         super().__init__()
-#         self.discriminators = nn.ModuleList(
-#             [Discriminator(*args, **kwargs) for i in range(n_dis)], )
+class StackDiscriminators(nn.Module):
+    def __init__(self, n_dis, *args, **kwargs):
+        super().__init__()
+        self.discriminators = nn.ModuleList(
+            [RaveDiscriminator(*args, **kwargs) for i in range(n_dis)], )
 
-#     def forward(self, x):
-#         features = []
-#         for layer in self.discriminators:
-#             features.append(layer(x))
-#             x = nn.functional.avg_pool1d(x, 2)
-#         return features
+    def forward(self, x):
+        features = []
+        for layer in self.discriminators:
+            features.append(layer(x))
+            x = nn.functional.avg_pool1d(x, 2)
+        return features
     
-
 class CrossEntropyProjection(nn.Module):
     def __init__(self):
         super().__init__()
@@ -844,13 +844,12 @@ class RAVE(pl.LightningModule):
             bias,
         )
 
-        # self.discriminator = StackDiscriminators(
-        #     3,
-        #     in_size=1,
-        #     capacity=d_capacity,
-        #     multiplier=d_multiplier,
-        #     n_layers=d_n_layers,
-        # )
+        self.rave_discriminator = StackDiscriminators(
+             3,
+             in_size=1,
+             capacity=d_capacity,
+             multiplier=d_multiplier,
+             n_layers=d_n_layers)
 
         self.discriminator = Discriminator()
 
@@ -1021,34 +1020,15 @@ class RAVE(pl.LightningModule):
         #    self.CE_projection.eval()
 
         # ENCODE INPUT
-        #z_init_1, kl = self.reparametrize(*self.encoder(x_clean[:, :5, :]))
         z_init_1 = self.encoder(x_perturb)
         kl = 0
         p.tick("encode")
-
-        #if self.warmed_up:  # FREEZE ENCODER
-            #z_init_1 = z_init_1.detach()
-           # kl = kl.detach()
             
         predicted_units = self.CE_projection(z_init_1)
- 
         z = torch.cat((z_init_1, sp), 1)
-
-        #z = torch.cat((z_init_1, sp), 1)
-        
-        #z_detached = z.detach()
-        
-        #if self.warmed_up:
-        #    z = z.detach()
 
         # DECODE LATENT
         y_pqmf = self.decoder(z, add_noise=self.warmed_up)
-        
-        #if self.warmed_up:
-        #    z = z.detach()
-
-        # DECODE LATENT
-        #y_pqmf = self.decoder(z, add_noise=self.warmed_up)
         p.tick("decode")
         
         # CONTENT OF RECONSTRUCTED (Y)
@@ -1082,8 +1062,6 @@ class RAVE(pl.LightningModule):
             y = self.pqmf.inverse(y_pqmf)
             sc_loss, mag_loss = self.stft_criterion(y.squeeze(1), x_clean.squeeze(1))
             distance = (sc_loss + mag_loss) * 2.5
-            #print(new_dis)
-            #distance = distance + new_dis #self.distance(x_clean, y)
             p.tick("fb distance")
 
         loud_x = self.loudness(x_clean)
@@ -1123,42 +1101,42 @@ class RAVE(pl.LightningModule):
         # Compute average to get overall discriminator loss (L_D).
         loss_dis = loss_dis / len(res_fake + period_fake)
 
-        # feature_matching_distance = 0.
-        # if self.warmed_up:  # DISCRIMINATION
-        #     feature_true = self.discriminator(x_clean)
-        #     feature_fake = self.discriminator(y)
+        feature_matching_distance = 0.
+        if self.warmed_up:  # DISCRIMINATION
+            feature_true = self.discriminator(x_clean)
+            feature_fake = self.discriminator(y)
+            
+            loss_dis_2 = 0
+            loss_adv_2 = 0
+            
+            pred_true = 0
+            pred_fake = 0
 
-        #     loss_dis = 0
-        #     loss_adv = 0
+            for scale_true, scale_fake in zip(feature_true, feature_fake):
+                feature_matching_distance = feature_matching_distance + 10 * sum(
+                     map(
+                        lambda x_clean, y: abs(x_clean - y).mean(),
+                         scale_true,
+                         scale_fake,
+                     )) / len(scale_true)
 
-        #     pred_true = 0
-        #     pred_fake = 0
+                _dis, _adv = self.adversarial_combine(
+                     scale_true[-1],
+                     scale_fake[-1],
+                     mode=self.mode,
+                 )
 
-        #     for scale_true, scale_fake in zip(feature_true, feature_fake):
-        #         feature_matching_distance = feature_matching_distance + 10 * sum(
-        #             map(
-        #                 lambda x_clean, y: abs(x_clean - y).mean(),
-        #                 scale_true,
-        #                 scale_fake,
-        #             )) / len(scale_true)
+                pred_true = pred_true + scale_true[-1].mean()
+                pred_fake = pred_fake + scale_fake[-1].mean()
 
-        #         _dis, _adv = self.adversarial_combine(
-        #             scale_true[-1],
-        #             scale_fake[-1],
-        #             mode=self.mode,
-        #         )
+                loss_dis2 = loss_dis2 + _dis
+                loss_adv2 = loss_adv2 + _adv
 
-        #         pred_true = pred_true + scale_true[-1].mean()
-        #         pred_fake = pred_fake + scale_fake[-1].mean()
-
-        #         loss_dis = loss_dis + _dis
-        #         loss_adv = loss_adv + _adv
-
-        # else:
-        #     pred_true = torch.tensor(0.).to(x_clean)
-        #     pred_fake = torch.tensor(0.).to(x_clean)
-        #     loss_dis = torch.tensor(0.).to(x_clean)
-        #     loss_adv = torch.tensor(0.).to(x_clean)
+        else:
+            pred_true = torch.tensor(0.).to(x_clean)
+            pred_fake = torch.tensor(0.).to(x_clean)
+            loss_dis = torch.tensor(0.).to(x_clean)
+            loss_adv = torch.tensor(0.).to(x_clean)
 
         # COMPOSE GEN LOSS
         # beta = get_beta_kl_cyclic_annealed(
@@ -1173,6 +1151,9 @@ class RAVE(pl.LightningModule):
         # loss_gen = distance + loss_adv + CE_loss * 2 #+ beta * kl + contrastrive_loss * self.contr_coeff + content_loss
         # if self.feature_match:
         #     loss_gen = loss_gen + feature_matching_distance
+        
+        adv2 = loss_adv2 + feature_matching_distance
+        
         p.tick("gen loss compose")
 
         if self.global_step % 2:
@@ -1210,7 +1191,8 @@ class RAVE(pl.LightningModule):
             "mean_positive": mean_positive,
             "mean_negative": mean_negative,
             "content": content_loss,
-            "CE": CE_loss
+            "CE": CE_loss,
+            "loss_adv": loss_adv
             #"content_loss": content_loss
         })
         
