@@ -1105,8 +1105,8 @@ class RAVE(pl.LightningModule):
         feature_true = self.rave_discriminator(x_clean)
         feature_fake = self.rave_discriminator(y)
             
-        loss_dis_2 = 0
-        loss_adv_2 = 0
+        loss_dis2 = 0
+        loss_adv2 = 0
             
         pred_true = 0
         pred_fake = 0
