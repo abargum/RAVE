@@ -1102,41 +1102,33 @@ class RAVE(pl.LightningModule):
         loss_dis = loss_dis / len(res_fake + period_fake)
 
         feature_matching_distance = 0.
-        if self.warmed_up:  # DISCRIMINATION
-            feature_true = self.discriminator(x_clean)
-            feature_fake = self.discriminator(y)
+        feature_true = self.rave_discriminator(x_clean)
+        feature_fake = self.rave_discriminator(y)
             
-            loss_dis_2 = 0
-            loss_adv_2 = 0
+        loss_dis_2 = 0
+        loss_adv_2 = 0
             
-            pred_true = 0
-            pred_fake = 0
+        pred_true = 0
+        pred_fake = 0
 
-            for scale_true, scale_fake in zip(feature_true, feature_fake):
-                feature_matching_distance = feature_matching_distance + 10 * sum(
-                     map(
-                        lambda x_clean, y: abs(x_clean - y).mean(),
+        for scale_true, scale_fake in zip(feature_true, feature_fake):
+            feature_matching_distance = feature_matching_distance + 10 * sum(
+                map(
+                    lambda x_clean, y: abs(x_clean - y).mean(),
                          scale_true,
                          scale_fake,
                      )) / len(scale_true)
 
-                _dis, _adv = self.adversarial_combine(
-                     scale_true[-1],
-                     scale_fake[-1],
-                     mode=self.mode,
-                 )
+            _dis, _adv = self.adversarial_combine(
+                scale_true[-1],
+                scale_fake[-1],
+                mode=self.mode)
 
-                pred_true = pred_true + scale_true[-1].mean()
-                pred_fake = pred_fake + scale_fake[-1].mean()
+            pred_true = pred_true + scale_true[-1].mean()
+            pred_fake = pred_fake + scale_fake[-1].mean()
 
-                loss_dis2 = loss_dis2 + _dis
-                loss_adv2 = loss_adv2 + _adv
-
-        else:
-            pred_true = torch.tensor(0.).to(x_clean)
-            pred_fake = torch.tensor(0.).to(x_clean)
-            loss_dis = torch.tensor(0.).to(x_clean)
-            loss_adv = torch.tensor(0.).to(x_clean)
+            loss_dis2 = loss_dis2 + _dis
+            loss_adv2 = loss_adv2 + _adv
 
         # COMPOSE GEN LOSS
         # beta = get_beta_kl_cyclic_annealed(
@@ -1153,6 +1145,9 @@ class RAVE(pl.LightningModule):
         #     loss_gen = loss_gen + feature_matching_distance
         
         adv2 = loss_adv2 + feature_matching_distance
+        
+        print("LOSS RAVE:", loss_dis2, adv2)
+        print("LOSS LVS:", loss_dis, loss_adv)
         
         p.tick("gen loss compose")
 
@@ -1185,14 +1180,16 @@ class RAVE(pl.LightningModule):
             "loss_dis": loss_dis,
             "loss_gen": loss_gen,
             "distance": distance,
-            #"feature_matching": feature_matching_distance,
+            "feature_matching": feature_matching_distance,
             "contrastive_loss": contrastrive_loss,
             "contrastive_coeff": self.contr_coeff,
             "mean_positive": mean_positive,
             "mean_negative": mean_negative,
             "content": content_loss,
             "CE": CE_loss,
-            "loss_adv": loss_adv
+            "loss_adv": loss_adv,
+            "loss_dis_rave": loss_dis2,
+            "loss_adv_rave": loss_adv2,
             #"content_loss": content_loss
         })
         
