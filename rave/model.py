@@ -1010,6 +1010,53 @@ class RAVE(pl.LightningModule):
         x_clean = x.unsqueeze(1)
         x_perturb =  batch['data_perturbed_1'].unsqueeze(1)
         
+        if self.pqmf is not None:  # MULTIBAND DECOMPOSITION
+            x_clean = self.pqmf(x_clean)
+            x_perturb = self.pqmf(x_perturb)
+            p.tick("pqmf")
+
+        #if self.warmed_up:  # EVAL ENCODER
+        #    self.encoder.eval()
+        #    self.CE_projection.eval()
+
+        # ENCODE INPUT
+        z_init_1 = self.encoder(x_perturb)
+        kl = 0
+        p.tick("encode")
+            
+        predicted_units = self.CE_projection(z_init_1)
+        z = torch.cat((z_init_1, sp), 1)
+
+        # DECODE LATENT
+        y_pqmf = self.decoder(z, add_noise=self.warmed_up)
+        p.tick("decode")
+        
+        # CONTENT OF RECONSTRUCTED (Y)
+        if self.content:
+            with torch.no_grad():
+                #y_enc, _ = self.reparametrize(*self.encoder(y_pqmf[:, :5, :]))
+                y_enc, _ = self.encoder(y_pqmf[:, :5, :])
+            content_loss = torch.nn.functional.l1_loss(z_init_1, y_enc) * 7.5
+        else:
+            content_loss = 0
+
+        # DISTANCE BETWEEN INPUT AND OUTPUT
+        #distance = self.distance(x_clean, y_pqmf)
+        #print(distance)
+        p.tick("mb distance")
+        
+        if self.contrastive:
+            if self.warmed_up:
+                contrastrive_loss = 0
+                mean_positive = 0
+                mean_negative = 0
+            else:
+                contrastrive_loss, mean_positive, mean_negative = self.contr_loss(z_init_1, z_init_2)
+        else:
+            contrastrive_loss = 0
+            mean_positive = 0
+            mean_negative = 0
+
         if self.pqmf is not None:  # FULL BAND RECOMPOSITION
             x_clean = self.pqmf.inverse(x_clean)
             y = self.pqmf.inverse(y_pqmf)
@@ -1024,8 +1071,8 @@ class RAVE(pl.LightningModule):
 
         feature_matching_distance = 0.
         if self.warmed_up:  # DISCRIMINATION
-            feature_true = self.rave_discriminator(x_clean)
-            feature_fake = self.rave_discriminator(y)
+            feature_true = self.discriminator(x_clean)
+            feature_fake = self.discriminator(y)
 
             loss_dis = 0
             loss_adv = 0
@@ -1070,7 +1117,7 @@ class RAVE(pl.LightningModule):
         
         CE_loss = torch.nn.functional.cross_entropy(predicted_units, batch['discrete_units_16k'].type(torch.int64))
         
-        loss_gen = distance + loss_adv + CE_loss #+ beta * kl + contrastrive_loss * self.contr_coeff + content_loss
+        loss_gen = distance + loss_adv + (2 * CE_loss) #+ beta * kl + contrastrive_loss * self.contr_coeff + content_loss
         
         if self.feature_match:
             loss_gen = loss_gen + feature_matching_distance
