@@ -1146,8 +1146,8 @@ class RAVE(pl.LightningModule):
             loss_dis_rave = torch.tensor(0.).to(x_clean)
             loss_adv_rave = torch.tensor(0.).to(x_clean)
             
-        loss_dis = loss_dis_lvc + loss_dis_rave * 0.1
-        loss_adv = loss_adv_lvc + (loss_adv_rave + feature_matching_distance) * 0.1
+        loss_dis = loss_dis_lvc + loss_dis_rave * 0.5
+        loss_adv = loss_adv_lvc + (loss_adv_rave + feature_matching_distance) * 0.5
         
         CE_loss = torch.nn.functional.cross_entropy(predicted_units, batch['discrete_units_16k'].type(torch.int64))
         
@@ -1211,18 +1211,14 @@ class RAVE(pl.LightningModule):
         # SPEAKER EMBEDDING AND PITCH EXCITATION
         sp = self.speaker_projection(sp)
         sp = torch.permute(sp.unsqueeze(1).repeat(1, 16, 1), (0, 2, 1))
-        
         x = x.unsqueeze(1)
         
         if self.pqmf is not None:
             x = self.pqmf(x)
 
-        z = self.encoder(x[:, :5, :])
+        z = self.encoder(x)
         
-        #mean, scale = self.encoder(x[:, :5, :])
-        #z, _ = self.reparametrize(mean, scale)
-        
-        return z, torch.cat((z, sp), 1)
+        return z, torch.cat((z, sp), 1), sp
 
     def decode(self, z):
         y = self.decoder(z, add_noise=True)

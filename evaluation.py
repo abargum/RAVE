@@ -104,7 +104,7 @@ dataset = SimpleDataset(
         preprocess_function=preprocess,
         split_set="full",
         transforms=Perturb([
-            lambda x: (x.astype(np.float32)),
+            lambda x, x_1: (x.astype(np.float32), x_1.astype(np.float32)),
         ], 16000))
 
 dataset_embeddings = []
@@ -162,7 +162,7 @@ plt.savefig('plots/scatter_plot_embeddings.png', bbox_inches='tight')
 # ---------------------------------------------------
 model = wenet.load_model('english')
 resemblyzer = VoiceEncoder()
-max_length = len(dataset)
+max_length = 300 #len(dataset)
 
 step = 0
 wer_full = 0
@@ -178,6 +178,7 @@ for i, example in enumerate(dataset):
     # CREATE SPECTROGRAMS FOR 1 EXAMPLE
     # ---------------------------------------------------
     if i == 0:
+        print("Creating Spectrograms..")
         length = len(example['data_clean'])
         x = example['data_clean'].reshape(int(length / 32768), -1)
         x = torch.from_numpy(x).float().to(device)
@@ -199,7 +200,8 @@ for i, example in enumerate(dataset):
         y = rave.decode(z_cat)
         y = y.reshape(-1, 1).cpu().numpy()
         plot_spectrogram(y, title="no_cont")
-    
+        
+        print("Creating Conversions..")
     # ---------------------------------------------------
     # START CONVERSION AND OBJECTIVE METRICS
     # ---------------------------------------------------
