@@ -5,12 +5,12 @@
 from concurrent.futures import ProcessPoolExecutor, TimeoutError
 from os import makedirs, path
 from pathlib import Path
-import glob
 
 import librosa as li
 import numpy as np
 import torch
 import os
+import glob
 from sklearn import mixture
 from scipy.io.wavfile import read as read_wav_file
 from tqdm import tqdm
@@ -101,7 +101,7 @@ class SimpleDataset_VCTK(torch.utils.data.Dataset):
         
         self.discrete_units = torch.hub.load("bshall/hubert:main",f"hubert_discrete", trust_repo=True).cuda()
 
-        # IF NO DATA INSIDE DATASET: PREPROCESS
+        # IF NO DATA INSIDE DATASET: PREPROCESS
         self.len = len(self.env)
 
         if self.len == 0:
