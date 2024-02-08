@@ -861,7 +861,8 @@ class RAVE(pl.LightningModule):
             pitch = pitch.unsqueeze(1)
             pitch = F.interpolate(pitch, l)
             std, mean = torch.std_mean(pitch, dim=-1, keepdim=True)
-            return (pitch - mean) / std
+            pitch_norm = torch.where(std != 0, (pitch - mean) / std, (pitch - mean))
+            return pitch_norm
 
     def training_step(self, batch, batch_idx):
         p = Profiler()
