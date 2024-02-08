@@ -356,218 +356,6 @@ class DownsampleLayer(nn.Module):
         return self.net(x)
 
 
-class FiLM(nn.Module):
-    def __init__(
-        self,
-        cond_dim,  # dim of conditioning input
-        batch_norm=True,
-    ):
-        super().__init__()
-        self.batch_norm = batch_norm
-        if batch_norm:
-            self.bn = torch.nn.BatchNorm1d(cond_dim // 2, affine=False)
-
-    def forward(self, x, cond):
-
-        device = x.device
-        self.bn.to(x.device)
-
-        g, b = torch.chunk(cond, 2, dim=1)
-
-        if self.batch_norm:
-            x = self.bn(x)  # apply BatchNorm without affine
-        x = (x * g) + b  # then apply conditional affine
-
-        return x
-
-
-class Generator(nn.Module):
-    def __init__(self,
-                 latent_size,
-                 capacity,
-                 data_size,
-                 ratios_up,
-                 ratios_down,
-                 loud_stride,
-                 use_noise,
-                 noise_ratios,
-                 noise_bands,
-                 padding_mode,
-                 bias=False):
-
-        super().__init__()
-
-        # UPSAMPLER
-        upsample_net = [
-            wn(
-                cc.Conv1d(
-                    latent_size,
-                    2**len(ratios_up) * capacity,
-                    7,
-                    padding=cc.get_padding(7, mode=padding_mode),
-                    bias=bias,
-                ))
-        ]
-
-        for i, r in enumerate(ratios_up):
-            in_dim = 2**(len(ratios_up) - i) * capacity
-            out_dim = 2**(len(ratios_up) - i - 1) * capacity
-
-            upsample_net.append(
-                UpsampleLayer(
-                    in_dim,
-                    out_dim,
-                    r,
-                    padding_mode,
-                    cumulative_delay=upsample_net[-1].cumulative_delay,
-                ))
-            upsample_net.append(
-                ResidualStack(
-                    out_dim,
-                    3,
-                    padding_mode,
-                    cumulative_delay=upsample_net[-1].cumulative_delay,
-                ))
-
-        # DOWNSAMPLER
-        downsample_net = []
-        for i, r in enumerate(ratios_down):
-            in_dim = 16
-            out_dim_d = 16
-
-            if i == 0:
-                downsample_net.append(
-                    DownsampleLayer(in_dim,
-                                    out_dim_d,
-                                    r,
-                                    padding_mode,
-                                    cumulative_delay=0))
-            else:
-                downsample_net.append(
-                    DownsampleLayer(
-                        in_dim,
-                        out_dim_d,
-                        r,
-                        padding_mode,
-                        cumulative_delay=downsample_net[-1].cumulative_delay,
-                    ))
-
-        downsample_conv = []
-        for i, r in enumerate(ratios_down):
-            if i == 0:
-                downsample_conv.append(
-                    wn(
-                        cc.Conv1d(
-                            16,
-                            (2**(i) * capacity) * 2,
-                            1,
-                            padding=cc.get_padding(1, mode=padding_mode),
-                            cumulative_delay=0,
-                            bias=bias,
-                        )))
-            else:
-                downsample_conv.append(
-                    wn(
-                        cc.Conv1d(
-                            16,
-                            (2**(i) * capacity) * 2,
-                            1,
-                            padding=cc.get_padding(1, mode=padding_mode),
-                            cumulative_delay=downsample_conv[-1].
-                            cumulative_delay,
-                            bias=bias,
-                        )))
-
-        self.upsampler = cc.CachedSequential(*upsample_net)
-        self.downsampler = cc.CachedSequential(*downsample_net)
-        self.downsampler_conv = cc.CachedSequential(*downsample_conv)
-
-        # -----------------------------------------------
-
-        film_net = []
-        film_net.append(FiLM(1024))
-        film_net.append(FiLM(512))
-        film_net.append(FiLM(256))
-        film_net.append(FiLM(128))
-        self.film_conditioning = film_net
-
-        # -----------------------------------------------
-
-        wave_gen = wn(
-            cc.Conv1d(
-                out_dim,
-                data_size,
-                7,
-                padding=cc.get_padding(7, mode=padding_mode),
-                bias=bias,
-            ))
-
-        loud_gen = wn(
-            cc.Conv1d(
-                out_dim,
-                1,
-                2 * loud_stride + 1,
-                stride=loud_stride,
-                padding=cc.get_padding(2 * loud_stride + 1,
-                                       loud_stride,
-                                       mode=padding_mode),
-                bias=bias,
-            ))
-
-        branches = [wave_gen, loud_gen]
-
-        if use_noise:
-            noise_gen = NoiseGenerator(
-                out_dim,
-                data_size,
-                noise_ratios,
-                noise_bands,
-                padding_mode=padding_mode,
-            )
-            branches.append(noise_gen)
-
-        self.synth = cc.AlignBranches(
-            *branches,
-            cumulative_delay=self.upsampler.cumulative_delay,
-        )
-
-        self.use_noise = use_noise
-        self.loud_stride = loud_stride
-        self.cumulative_delay = self.synth.cumulative_delay
-
-    def forward(self, x, ex, add_noise: bool = True):
-        downsampled_layers = []
-        for down_layer, conv_layer in zip(self.downsampler,
-                                          self.downsampler_conv):
-            ex = down_layer(ex)
-            downsampled_layers.append(conv_layer(ex))
-
-        for i, up_layer in enumerate(self.upsampler):
-            if i % 2 != 0 or i == 0:
-                x = up_layer(x)
-            else:
-                x = up_layer(x)
-                x = self.film_conditioning[i // 2 - 1](
-                    x, downsampled_layers[len(downsampled_layers) - (i // 2)])
-
-        # -----------------------------------------------
-
-        if self.use_noise:
-            waveform, loudness, noise = self.synth(x)
-        else:
-            waveform, loudness = self.synth(x)
-            noise = torch.zeros_like(waveform)
-
-        loudness = loudness.repeat_interleave(self.loud_stride)
-        loudness = loudness.reshape(x.shape[0], 1, -1)
-
-        waveform = torch.tanh(waveform) * mod_sigmoid(loudness)
-
-        if add_noise:
-            waveform = waveform + noise
-
-        return waveform
-
 # ------------------------------------
 # ENCODER
 # ------------------------------------
@@ -618,7 +406,7 @@ class Encoder(nn.Module):
                 cumulative_delay=net[-2].cumulative_delay,
             ))
         
-        net.append(torch.nn.LayerNorm(16))
+        net.append(torch.nn.LayerNorm(64))
 
         self.net = cc.CachedSequential(*net)
         self.cumulative_delay = self.net.cumulative_delay
@@ -689,19 +477,35 @@ class StackDiscriminators(nn.Module):
 class CrossEntropyProjection(nn.Module):
     def __init__(self):
         super().__init__()
-        self.layer_norm = torch.nn.LayerNorm(16)
-        self.lin1 = torch.nn.Linear(64, 100)
-        self.lin2 = torch.nn.Linear(16, 102)
-        self.softmax = torch.nn.Softmax()
+        self.layer_norm = torch.nn.LayerNorm(64)
+        self.proj = nn.Conv1d(64, 100, 1, bias=False)
+        # self.lin1 = torch.nn.Linear(64, 100)
+        # self.lin2 = torch.nn.Linear(16, 102)
+        # self.softmax = torch.nn.Softmax()
         
     def forward(self, x):
         z_for_CE = self.layer_norm(x)
-        z_for_CE = self.lin1(torch.permute(z_for_CE, (0, 2, 1)))
-        z_for_CE = self.lin2(torch.permute(z_for_CE, (0, 2, 1)))
-        z_for_CE = self.softmax(z_for_CE)
+        z_for_CE = self.proj(z_for_CE)
+        z_for_CE = F.interpolate(z_for_CE, 102)
+        # z_for_CE = self.lin1(torch.permute(z_for_CE, (0, 2, 1)))
+        # z_for_CE = self.lin2(torch.permute(z_for_CE, (0, 2, 1)))
+        # z_for_CE = self.softmax(z_for_CE)
         return z_for_CE
-        
     
+class FiLM(nn.Module):
+    def __init__(self, input_channels, output_channels, cond_channels):
+        super().__init__()
+        self.conv = nn.Conv1d(input_channels, output_channels, 7, 1, 3, padding_mode='reflect')
+        self.to_mu = nn.Conv1d(cond_channels, output_channels, 1)
+        self.to_sigma = nn.Conv1d(cond_channels, output_channels, 1)
+
+    def forward(self, x, c):
+        x = self.conv(x)
+        mu = self.to_mu(c)
+        sigma = self.to_sigma(c)
+        x = x * mu + sigma
+        return x
+        
 class ContrastiveLoss(nn.Module):
     """Contrastive loss.
 
@@ -829,7 +633,7 @@ class RAVE(pl.LightningModule):
             
         self.speaker_projection = torch.nn.Linear(speaker_size, 256)
 
-        new_latent_size = latent_size + 256
+        new_latent_size = latent_size #+ 256
         self.decoder = Generator_Old(
             new_latent_size,
             capacity,
@@ -894,6 +698,7 @@ class RAVE(pl.LightningModule):
         
         self.contrastive = contrastive_loss
         self.content = content_loss
+        self.film = FiLM(64, 64, 256)
 
     def configure_optimizers(self):
         
@@ -1002,8 +807,8 @@ class RAVE(pl.LightningModule):
 
         # SPEAKER EMBEDDING AND PITCH EXCITATION
         sp = batch['speaker_emb']
-        sp = self.speaker_projection(sp)
-        sp = torch.permute(sp.unsqueeze(1).repeat(1, 16, 1), (0, 2, 1))
+        sp1 = self.speaker_projection(sp)
+        sp = torch.permute(sp1.unsqueeze(1).repeat(1, 64, 1), (0, 2, 1))
 
         # --------------------------------------
 
@@ -1030,7 +835,9 @@ class RAVE(pl.LightningModule):
             #kl = kl.detach()
                         
         predicted_units = self.CE_projection(z_init_1)
-        z = torch.cat((z_init_1, sp), 1)
+        #z = torch.cat((z_init_1, sp), 1)
+
+        z = self.film(z_init_1, sp1.unsqueeze(-1).repeat(1, 1, 64))
         
         #z_detached = z.detach()
         
@@ -1146,8 +953,8 @@ class RAVE(pl.LightningModule):
             loss_dis_rave = torch.tensor(0.).to(x_clean)
             loss_adv_rave = torch.tensor(0.).to(x_clean)
             
-        loss_dis = loss_dis_lvc + loss_dis_rave * 0.5
-        loss_adv = loss_adv_lvc + (loss_adv_rave + feature_matching_distance) * 0.5
+        loss_dis = loss_dis_lvc + loss_dis_rave * 0.0
+        loss_adv = loss_adv_lvc + (loss_adv_rave + feature_matching_distance) * 0.0
         
         CE_loss = torch.nn.functional.cross_entropy(predicted_units, batch['discrete_units_16k'].type(torch.int64))
         
@@ -1233,7 +1040,7 @@ class RAVE(pl.LightningModule):
         # SPEAKER EMBEDDING AND PITCH EXCITATION
         sp = batch['speaker_emb']
         sp = self.speaker_projection(sp)
-        sp = torch.permute(sp.unsqueeze(1).repeat(1, 16, 1), (0, 2, 1))
+        #sp = torch.permute(sp.unsqueeze(1).repeat(1, 64, 1), (0, 2, 1))
 
         # --------------------------------------
 
@@ -1247,7 +1054,8 @@ class RAVE(pl.LightningModule):
         
         z = self.encoder(x_clean)
 
-        z = torch.cat((z, sp), 1)
+        #z = torch.cat((z, sp), 1)
+        z = self.film(z, sp.unsqueeze(-1).repeat(1, 1, 64))
         y = self.decoder(z, add_noise=self.warmed_up)
 
         if self.pqmf is not None:
@@ -1263,7 +1071,7 @@ class RAVE(pl.LightningModule):
         #FOR CONVERSION
         speaker_emb_avg = batch['speaker_id_avg']
         speaker_emb_avg = self.speaker_projection(speaker_emb_avg)
-        speaker_emb_avg = torch.permute(speaker_emb_avg.unsqueeze(1).repeat(1, 16, 1), (0, 2, 1))
+        #speaker_emb_avg = torch.permute(speaker_emb_avg.unsqueeze(1).repeat(1, 64, 1), (0, 2, 1))
 
         input_index = 0
         target_index = 1
@@ -1279,7 +1087,8 @@ class RAVE(pl.LightningModule):
         #z, _ = self.reparametrize(mean, scale)
         z = self.encoder(input_conversion)
 
-        z = torch.cat((z, target_embedding), 1)
+        #z = torch.cat((z, target_embedding), 1)
+        z = self.film(z, target_embedding.unsqueeze(-1).repeat(1, 1, 64))
         converted = self.decoder(z, add_noise=self.warmed_up)
 
         if self.pqmf is not None:

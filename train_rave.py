@@ -37,7 +37,7 @@ if __name__ == "__main__":
         BIAS = True
         NO_LATENCY = False
         RATIOS = setting(
-            default=[4, 4, 4, 2],
+            default=[4, 2, 2, 2],
             small=[4, 4, 4, 2],
             large=[4, 4, 2, 2, 2],
         )
