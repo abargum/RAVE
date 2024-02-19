@@ -70,25 +70,28 @@ class FiLM_Conditioning(torch.nn.Module):
         self,
         cond_dim,  # dim of conditioning input
         num_features,  # dim of the conv channel
-        batch_norm=True,
+        batch_norm=False,
     ):
         super().__init__()
         self.num_features = num_features
         self.batch_norm = batch_norm
         if batch_norm:
-            self.bn = torch.nn.BatchNorm1d(num_features, affine=False)
-        self.adaptor = torch.nn.Linear(cond_dim, num_features * 2)
+            self.bn = torch.nn.BatchNorm1d(num_features, affine=False).to('cuda')
+        self.adaptor_1 = torch.nn.Linear(cond_dim, num_features).to('cuda')
+        self.adaptor_2 = torch.nn.Linear(cond_dim, num_features).to('cuda')
 
     def forward(self, x, cond):
 
-        cond = self.adaptor(cond)
-        g, b = torch.chunk(cond, 2, dim=-1)
+        g = self.adaptor_1(cond)
+        b = self.adaptor_2(cond)
+
         g = g.permute(0, 2, 1)
         b = b.permute(0, 2, 1)
 
         if self.batch_norm:
-            x = self.bn(x)  # apply BatchNorm without affine
-        x = (x * g) + b  # then apply conditional affine
+            x = self.bn(x)
+            
+        x = (x * g) + b  
 
         return x
     
@@ -101,7 +104,7 @@ class ResidualStack(nn.Module):
                  bias=False):
         super().__init__()
         net = []
-        film_net = []
+        #film_net = []
 
         res_cum_delay = 0
         # SEQUENTIAL RESIDUALS
@@ -123,8 +126,6 @@ class ResidualStack(nn.Module):
                         bias=bias,
                     )))
             
-            film_net.append(FiLM_Conditioning(cond_dim=256, num_features=dim))
-
             seq.append(nn.LeakyReLU(.2))
             seq.append(
                 wn(
@@ -136,8 +137,6 @@ class ResidualStack(nn.Module):
                         bias=bias,
                         cumulative_delay=seq[-2].cumulative_delay,
                     )))
-            
-            film_net.append(FiLM_Conditioning(cond_dim=256, num_features=dim))
 
             res_net = cc.CachedSequential(*seq)
 
@@ -145,13 +144,12 @@ class ResidualStack(nn.Module):
             res_cum_delay = net[-1].cumulative_delay
 
         self.net = cc.CachedSequential(*net)
-        self.film_conditioning = film_net
+        self.film_conditioning = FiLM_Conditioning(cond_dim=256, num_features=dim)
         self.cumulative_delay = self.net.cumulative_delay + cumulative_delay
 
     def forward(self, x, speaker):
-        for res_layer, film_layer in zip(self.net, self.film_conditioning):
-            x = res_layer(x)
-            x = film_layer(x, speaker.unsqueeze(1))
+        x = self.net(x)
+        x = self.film_conditioning(x, speaker.unsqueeze(1))
         return x
 
 class UpsampleLayer(nn.Module):
@@ -451,7 +449,7 @@ class Encoder(nn.Module):
 
     def forward(self, x):
         z = self.net(x)
-        return z #torch.split(z, z.shape[1] // 2, 1)
+        return z 
 
 
 class Discriminator(nn.Module):
@@ -519,7 +517,7 @@ class CrossEntropyProjection(nn.Module):
         self.proj = nn.Conv1d(64, 100, 1, bias=False)
         # self.lin1 = torch.nn.Linear(64, 100)
         # self.lin2 = torch.nn.Linear(16, 102)
-        # self.softmax = torch.nn.Softmax()
+        self.softmax = torch.nn.Softmax()
         
     def forward(self, x):
         z_for_CE = self.layer_norm(x)
@@ -527,7 +525,7 @@ class CrossEntropyProjection(nn.Module):
         z_for_CE = F.interpolate(z_for_CE, 102)
         # z_for_CE = self.lin1(torch.permute(z_for_CE, (0, 2, 1)))
         # z_for_CE = self.lin2(torch.permute(z_for_CE, (0, 2, 1)))
-        # z_for_CE = self.softmax(z_for_CE)
+        z_for_CE = self.softmax(z_for_CE)
         return z_for_CE
     
 class Pitch2Vec(nn.Module):
@@ -684,7 +682,7 @@ class RAVE(pl.LightningModule):
             
         self.speaker_projection = torch.nn.Linear(speaker_size, 256)
 
-        new_latent_size = latent_size #+ 256
+        new_latent_size = latent_size 
         self.decoder = Generator_Old(
             new_latent_size,
             capacity,
@@ -708,6 +706,7 @@ class RAVE(pl.LightningModule):
         self.stft_criterion = MultiResolutionSTFTLoss(self.device, resolutions).to(self.device)
         
         self.new_discriminator = NewDiscriminator()
+        
         self.discriminator = StackDiscriminators(
             3,
             in_size=1,
@@ -749,53 +748,23 @@ class RAVE(pl.LightningModule):
         
         self.contrastive = contrastive_loss
         self.content = content_loss
-        self.film = FiLM(64, 64, 256)
-
-        self.p2v = Pitch2Vec(64)
-        self.latent_conditioner = FiLM_Conditioning(64, 64)
 
     def configure_optimizers(self):
         
-        #enc_p = list(self.encoder.parameters())
-        #enc_p += list(self.CE_projection.parameters())
+        enc_p = list(self.encoder.parameters())
+        enc_p += list(self.CE_projection.parameters())
         
         gen_p = list(self.decoder.parameters())
         gen_p += list(self.CE_projection.parameters())
         gen_p += list(self.encoder.parameters())
-        gen_p += list(self.p2v.parameters())
-        gen_p += list(self.latent_conditioner.parameters())
         
         dis_p = list(self.discriminator.parameters())
         dis_p += list(self.new_discriminator.parameters())
         
-        #enc_opt = torch.optim.AdamW(enc_p, 2e-5, betas=(.9, .98), eps=1e-06, weight_decay=1e-2)
         gen_opt = torch.optim.Adam(gen_p, 1e-4, (.5, .9))
         dis_opt = torch.optim.Adam(dis_p, 1e-4, (.5, .9))
 
-        return gen_opt, dis_opt#, enc_opt
-    
-    def contrastive_loss_function(self, ling_1, ling_2, kappa=0.1, content_adj=10, candidates=15):
-    
-        ling_s = F.normalize(torch.stack([ling_1, ling_2], dim=0), p=2, dim=2)
-        num_tokens = ling_s.shape[-1]
-        pos = ling_s.prod(dim=0).sum(dim=1) / kappa
-        confusion = torch.matmul(ling_s.transpose(2, 3), ling_s) / kappa
-
-        placeholder = torch.zeros(num_tokens, device=self.device)
-        mask = torch.stack([
-            placeholder.scatter(
-                0,
-                (
-                    torch.randperm(num_tokens - content_adj, device=self.device)[:candidates]
-                    + i + content_adj // 2 + 1) % num_tokens,
-                1.)
-            for i in range(num_tokens)])
-
-        masked = confusion.masked_fill(~mask.to(torch.bool), -np.inf)
-        neg = torch.logsumexp(masked, dim=-1)
-
-        contr_loss = -torch.logsumexp(pos - neg, dim=-1).sum(dim=0).mean()
-        return contr_loss
+        return gen_opt, dis_opt
     
     def update_warmup(self):
         self.contr_coeff = min(
@@ -871,9 +840,6 @@ class RAVE(pl.LightningModule):
         gen_opt, dis_opt = self.optimizers()
         x = batch['data_clean']
 
-        pitch = self._estimate_pitch(x)
-        pitch = self.p2v(pitch)
-
         # SPEAKER EMBEDDING AND PITCH EXCITATION
         sp = batch['speaker_emb']
         sp = self.speaker_projection(sp)
@@ -887,13 +853,9 @@ class RAVE(pl.LightningModule):
             p.tick("pqmf")
 
         # ENCODE INPUT
-        #z_init_1, kl = self.reparametrize(*self.encoder(x_clean[:, :5, :]))
         z = self.encoder(x_perturb)
-        z = self.latent_conditioner(z, pitch)
-        kl = 0
-        p.tick("encode")
-                        
         predicted_units = self.CE_projection(z)
+        p.tick("encode")
 
         # DECODE LATENT
         y_pqmf = self.decoder(z, sp, add_noise=self.warmed_up)
@@ -902,14 +864,12 @@ class RAVE(pl.LightningModule):
         # CONTENT OF RECONSTRUCTED (Y)
         if self.content:
             with torch.no_grad():
-                #y_enc, _ = self.reparametrize(*self.encoder(y_pqmf[:, :5, :]))
                 y_enc, _ = self.encoder(y_pqmf)
             content_loss = torch.nn.functional.l1_loss(z, y_enc) * 7.5
         else:
             content_loss = 0
 
         # DISTANCE BETWEEN INPUT AND OUTPUT
-        #distance = self.distance(x_clean, y_pqmf)
         p.tick("mb distance")
         
         if self.contrastive:
@@ -929,16 +889,15 @@ class RAVE(pl.LightningModule):
             y = self.pqmf.inverse(y_pqmf)
             sc_loss, mag_loss = self.stft_criterion(y.squeeze(1), x_clean.squeeze(1))
             distance = (sc_loss + mag_loss) * 2.5
-            #distance = distance + self.distance(x_clean, y)
             p.tick("fb distance")
 
         loud_x = self.loudness(x_clean)
         loud_y = self.loudness(y)
         loud_dist = (loud_x - loud_y).pow(2).mean()
-        #distance = distance + loud_dist
         p.tick("loudness distance")
 
         feature_matching_distance = 0.
+        
         if self.warmed_up:  # DISCRIMINATION
             
             loss_dis_lvc = 0
@@ -1003,9 +962,10 @@ class RAVE(pl.LightningModule):
             loss_adv_lvc = torch.tensor(0.).to(x_clean)
             loss_dis_rave = torch.tensor(0.).to(x_clean)
             loss_adv_rave = torch.tensor(0.).to(x_clean)
+
             
-        loss_dis = loss_dis_lvc + loss_dis_rave * 0.0
-        loss_adv = loss_adv_lvc + (loss_adv_rave + feature_matching_distance) * 0.0
+        loss_dis = loss_dis_lvc + loss_dis_rave * 0.1
+        loss_adv = loss_adv_lvc + (loss_adv_rave) * 0.1
         
         CE_loss = torch.nn.functional.cross_entropy(predicted_units, batch['discrete_units_16k'].type(torch.int64))
         
@@ -1054,7 +1014,6 @@ class RAVE(pl.LightningModule):
             "dis rave": loss_dis_rave,
             "adv lvc": loss_adv_lvc,
             "adv rave": loss_adv_rave
-            #"content_loss": content_loss
         })
         
         self.update_warmup()
@@ -1067,22 +1026,22 @@ class RAVE(pl.LightningModule):
     def encode(self, x, sp):
 
         # SPEAKER EMBEDDING AND PITCH EXCITATION
-        sp = self.speaker_projection(sp)
-        sp = torch.permute(sp.unsqueeze(1).repeat(1, 16, 1), (0, 2, 1))
         x = x.unsqueeze(1)
         
         if self.pqmf is not None:
             x = self.pqmf(x)
 
         z = self.encoder(x)
+        sp = self.speaker_projection(sp)
         
-        return z, torch.cat((z, sp), 1), sp
+        return z, sp
 
-    def decode(self, z):
-        y = self.decoder(z, add_noise=True)
+    def decode(self, z, sp):
+        y = self.decoder(z, sp, add_noise=True)
         if self.pqmf is not None:
             y = self.pqmf.inverse(y)
         return y
+
 
     def validation_step(self, batch, batch_idx):
 
@@ -1092,19 +1051,12 @@ class RAVE(pl.LightningModule):
         sp = batch['speaker_emb']
         sp = self.speaker_projection(sp)
 
-        pitch = self._estimate_pitch(x)
-        pitch = self.p2v(pitch)
-
         x_clean = x.unsqueeze(1)
         
         if self.pqmf is not None:
             x_clean = self.pqmf(x_clean)
-
-        #mean, scale = self.encoder(x_clean)
-        #z, _ = self.reparametrize(mean, scale)
         
         z = self.encoder(x_clean)
-        z = self.latent_conditioner(z, pitch)
         y = self.decoder(z, sp, add_noise=self.warmed_up)
 
         if self.pqmf is not None:
@@ -1123,9 +1075,6 @@ class RAVE(pl.LightningModule):
 
         input_index = 0
         target_index = 1
- 
-        pitch_in = self._estimate_pitch(x[input_index].unsqueeze(0))
-        pitch_in = self.p2v(pitch_in)
 
         input_conversion = x[input_index].unsqueeze(0).unsqueeze(0)
         target_conversion = x[target_index].unsqueeze(0).unsqueeze(0)
@@ -1134,10 +1083,7 @@ class RAVE(pl.LightningModule):
         if self.pqmf is not None:
             input_conversion = self.pqmf(input_conversion)
 
-        #mean, scale = self.encoder(input_conversion)
-        #z, _ = self.reparametrize(mean, scale)
         z = self.encoder(input_conversion)
-        z = self.latent_conditioner(z, pitch_in)
         converted = self.decoder(z, target_embedding, add_noise=self.warmed_up)
 
         if self.pqmf is not None:
@@ -1145,7 +1091,6 @@ class RAVE(pl.LightningModule):
             input_conversion = self.pqmf.inverse(input_conversion)
 
         return (torch.cat([x_clean, y], -1), 0, 
-                #torch.cat([x_clean, x_perturbed_1, x_perturbed_2], -1),
                 torch.cat([input_conversion, target_conversion, converted], -1))
 
     def validation_epoch_end(self, out):

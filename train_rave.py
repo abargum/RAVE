@@ -128,7 +128,7 @@ if __name__ == "__main__":
         'speaker_emb': torch.zeros(args.BATCH, speaker_size),
         'speaker_id_avg': torch.zeros(args.BATCH, speaker_size)}
     
-    model.validation_step(x, 0)
+    #model.validation_step(x, 0)
 
     preprocess = lambda name: simple_audio_preprocess(
         args.SR,

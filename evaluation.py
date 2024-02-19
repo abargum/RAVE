@@ -33,6 +33,7 @@ from udls_extended.transforms import Compose, RandomApply, Dequantize, RandomCro
 from resemblyzer import preprocess_wav, VoiceEncoder
 from speechmos import dnsmos
 from sklearn.decomposition import PCA
+from rave.model import FiLM
 
 torch.manual_seed(42)
 
@@ -182,24 +183,28 @@ for i, example in enumerate(dataset):
         length = len(example['data_clean'])
         x = example['data_clean'].reshape(int(length / 32768), -1)
         x = torch.from_numpy(x).float().to(device)
-        embedding = torch.tensor(example['speaker_id_avg']).unsqueeze(0).to(device)
+        embedding = torch.tensor(example['speaker_id_avg']).to(device)
         
         y = x.reshape(-1, 1).cpu().numpy()
         plot_spectrogram(y, title="original")
 
         #NO SPEAKER INFO
-        zeros = torch.zeros(embedding.repeat(x.shape[0], 1).shape).to(device)
-        z, z_cat, sp = rave.encode(x, zeros)
-        y = rave.decode(z_cat)
+        z, sp = rave.encode(x, embedding)
+        zeros = torch.zeros(sp.shape).unsqueeze(0).to(device)
+        
+        y = rave.decode(z, zeros)
         y = y.reshape(-1, 1).cpu().numpy()
         plot_spectrogram(y, title="no_speaker")
         
         #NO CONTENT INFO
+        """
         zeros = torch.zeros(z.shape).to(device)
+        print(zeros.shape)
         z_cat = torch.cat((zeros, sp), 1)
         y = rave.decode(z_cat)
         y = y.reshape(-1, 1).cpu().numpy()
         plot_spectrogram(y, title="no_cont")
+        """
         
         print("Creating Conversions..")
     # ---------------------------------------------------
@@ -220,8 +225,8 @@ for i, example in enumerate(dataset):
                 
                 file_path_conv = path.join(args.OUT, f"{example['speaker_id']}_{str(i)}_{speaker[1]}_conv.wav")
 
-                z, z_cat, _ = rave.encode(x, embedding.repeat(x.shape[0], 1))
-                y = rave.decode(z_cat)
+                z, sp = rave.encode(x, embedding)
+                y = rave.decode(z, sp)
                 y = y.reshape(-1, 1).cpu().numpy()
 
                 sf.write(file_path_conv, y, 16000)
