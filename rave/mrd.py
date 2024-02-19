@@ -10,7 +10,7 @@ class DiscriminatorR(torch.nn.Module):
         super(DiscriminatorR, self).__init__()
 
         self.resolution = resolution
-        self.sampling_rate = 16000
+        self.sampling_rate = 48000
         self.LRELU_SLOPE = 0.2
         self.use_spectral_norm = False
 

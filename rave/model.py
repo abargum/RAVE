@@ -442,7 +442,7 @@ class Encoder(nn.Module):
                 cumulative_delay=net[-2].cumulative_delay,
             ))
         
-        net.append(torch.nn.LayerNorm(64))
+        net.append(torch.nn.LayerNorm(128))
 
         self.net = cc.CachedSequential(*net)
         self.cumulative_delay = self.net.cumulative_delay
@@ -513,7 +513,7 @@ class StackDiscriminators(nn.Module):
 class CrossEntropyProjection(nn.Module):
     def __init__(self):
         super().__init__()
-        self.layer_norm = torch.nn.LayerNorm(64)
+        self.layer_norm = torch.nn.LayerNorm(128)
         self.proj = nn.Conv1d(64, 100, 1, bias=False)
         # self.lin1 = torch.nn.Linear(64, 100)
         # self.lin2 = torch.nn.Linear(16, 102)
@@ -522,7 +522,7 @@ class CrossEntropyProjection(nn.Module):
     def forward(self, x):
         z_for_CE = self.layer_norm(x)
         z_for_CE = self.proj(z_for_CE)
-        z_for_CE = F.interpolate(z_for_CE, 102)
+        z_for_CE = F.interpolate(z_for_CE, 204)
         # z_for_CE = self.lin1(torch.permute(z_for_CE, (0, 2, 1)))
         # z_for_CE = self.lin2(torch.permute(z_for_CE, (0, 2, 1)))
         z_for_CE = self.softmax(z_for_CE)
@@ -663,7 +663,7 @@ class RAVE(pl.LightningModule):
         encoder_out_size = cropped_latent_size if cropped_latent_size else latent_size
 
         self.encoder = Encoder(
-            data_size,
+            5,
             capacity,
             encoder_out_size,
             ratios,
@@ -853,7 +853,7 @@ class RAVE(pl.LightningModule):
             p.tick("pqmf")
 
         # ENCODE INPUT
-        z = self.encoder(x_perturb)
+        z = self.encoder(x_perturb[:, :5, :])
         predicted_units = self.CE_projection(z)
         p.tick("encode")
 
@@ -936,12 +936,14 @@ class RAVE(pl.LightningModule):
             feature_fake = self.discriminator(y)
 
             for scale_true, scale_fake in zip(feature_true, feature_fake):
+                """
                 feature_matching_distance = feature_matching_distance + 10 * sum(
                     map(
                         lambda x_clean, y: abs(x_clean - y).mean(),
                         scale_true,
                         scale_fake,
                     )) / len(scale_true)
+                """
 
                 _dis, _adv = self.adversarial_combine(
                     scale_true[-1],
@@ -989,12 +991,9 @@ class RAVE(pl.LightningModule):
         self.log("loss_dis", loss_dis)
         self.log("loss_gen", loss_gen)
         self.log("loud_dist", loud_dist)
-        self.log("regularization", kl)
         self.log("pred_true", pred_true.mean())
         self.log("pred_fake", pred_fake.mean())
         self.log("distance", distance)
-        #self.log("beta", beta)
-        self.log("feature_matching", feature_matching_distance),
         self.log("CE", CE_loss),
         #self.log("content_loss", content_loss)
         p.tick("log")
@@ -1003,7 +1002,6 @@ class RAVE(pl.LightningModule):
             "loss_dis": loss_dis,
             "loss_gen": loss_gen,
             "distance": distance,
-            "feature_matching": feature_matching_distance,
             "contrastive_loss": contrastrive_loss,
             "contrastive_coeff": self.contr_coeff,
             "mean_positive": mean_positive,
@@ -1056,7 +1054,7 @@ class RAVE(pl.LightningModule):
         if self.pqmf is not None:
             x_clean = self.pqmf(x_clean)
         
-        z = self.encoder(x_clean)
+        z = self.encoder(x_clean[:, :5, :])
         y = self.decoder(z, sp, add_noise=self.warmed_up)
 
         if self.pqmf is not None:
@@ -1083,7 +1081,7 @@ class RAVE(pl.LightningModule):
         if self.pqmf is not None:
             input_conversion = self.pqmf(input_conversion)
 
-        z = self.encoder(input_conversion)
+        z = self.encoder(input_conversion[:, :5, :])
         converted = self.decoder(z, target_embedding, add_noise=self.warmed_up)
 
         if self.pqmf is not None:
