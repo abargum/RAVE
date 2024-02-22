@@ -76,9 +76,9 @@ class FiLM_Conditioning(torch.nn.Module):
         self.num_features = num_features
         self.batch_norm = batch_norm
         if batch_norm:
-            self.bn = torch.nn.BatchNorm1d(num_features, affine=False).to('cuda')
-        self.adaptor_1 = torch.nn.Linear(cond_dim, num_features).to('cuda')
-        self.adaptor_2 = torch.nn.Linear(cond_dim, num_features).to('cuda')
+            self.bn = torch.nn.BatchNorm1d(num_features, affine=False).to('cuda:0')
+        self.adaptor_1 = torch.nn.Linear(cond_dim, num_features).to('cuda:0')
+        self.adaptor_2 = torch.nn.Linear(cond_dim, num_features).to('cuda:0')
 
     def forward(self, x, cond):
 
@@ -965,7 +965,7 @@ class RAVE(pl.LightningModule):
 
             
         loss_dis = loss_dis_lvc + loss_dis_rave * 0.1
-        loss_adv = loss_adv_lvc + (loss_adv_rave) * 0.1
+        loss_adv = loss_adv_lvc + loss_adv_rave * 0.1
         
         CE_loss = torch.nn.functional.cross_entropy(predicted_units, batch['discrete_units_16k'].type(torch.int64))
         
@@ -989,7 +989,6 @@ class RAVE(pl.LightningModule):
         self.log("loss_dis", loss_dis)
         self.log("loss_gen", loss_gen)
         self.log("loud_dist", loud_dist)
-        self.log("regularization", kl)
         self.log("pred_true", pred_true.mean())
         self.log("pred_fake", pred_fake.mean())
         self.log("distance", distance)

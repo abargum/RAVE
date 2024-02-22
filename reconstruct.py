@@ -65,8 +65,8 @@ dataset = SimpleDataset(
         sr,
         "RESNET",
         torch.device('cuda:0'),
-        'data/audio-16k',
-        args.WAV_FOLDER,
+        'data/audio-eval-16k',
+        'audio',
         preprocess_function=preprocess,
         split_set="full",
         transforms=Perturb([
@@ -87,11 +87,6 @@ rave = RAVE.load_from_checkpoint(
     strict=False,
 ).eval().to(device)
 
-# COMPUTE LATENT COMPRESSION RATIO
-x = torch.randn(1, 2**16).to(device)
-z, z_cat = rave.encode(x, embedding)
-ratio = x.shape[-1] // z.shape[-1]
-
 # SEARCH FOR WAV FILES
 audios = tqdm(list(Path(args.WAV_FOLDER).rglob("*.wav")))
 
@@ -103,14 +98,25 @@ for audio in audios:
 
     # LOAD AUDIO TO TENSOR
     x, sr = li.load(audio, sr=rave.sr)
-    x = torch.from_numpy(x).reshape(1, -1).float().to(device)
     
-    val = int(np.ceil((len(x) / length)))
-    N_pad = length * val
+    val = int(np.ceil((len(x) / 32768)))
+    N_pad = 32768 * val
     pad = (N_pad - (len(x) % N_pad)) % N_pad
     x = np.pad(x, (0, pad))
     x = x.reshape(-1, N_pad)
-    print(x.shape)
+    
+    x = torch.from_numpy(x).float().to(device)
+    x = x.reshape(int(x.shape[-1] / 32768), -1)
+    
+    
+    z, sp = rave.encode(x, embedding)
+    y = rave.decode(z, sp)
+    y = y.reshape(-1, 1).cpu().numpy()
+    
+    sf.write(path.join(args.OUT, f"reconstruction_{audio_name}.wav"), y, 16000)
+    sf.write(path.join(args.OUT, f"input_{audio_name}.wav"), x.reshape(-1).cpu().numpy(), 16000)
+    sf.write(path.join(args.OUT, "target.wav"), target, 16000)
+
 
     # PAD AUDIO
     #n_sample = x.shape[-1]
@@ -133,6 +139,3 @@ for audio in audios:
     #y = y.reshape(-1).cpu().numpy()
 
     # WRITE AUDIO
-sf.write(path.join(args.OUT, f"reconstruction_.wav"), y, 48000)
-sf.write(path.join(args.OUT, f"input_.wav"), x.reshape(-1).cpu().numpy(), 48000)
-sf.write(path.join(args.OUT, "target.wav"), target, 48000)

@@ -58,7 +58,7 @@ if __name__ == "__main__":
         D_MULTIPLIER = 4
         D_N_LAYERS = 4
 
-        WARMUP = setting(default=1000, small=1000000, large=3000000)
+        WARMUP = setting(default=50000, small=1000000, large=3000000)
         MODE = "hinge"
         CKPT = None
 
@@ -85,7 +85,7 @@ if __name__ == "__main__":
     # -------------------------------
     # Initialize W and B
     # -------------------------------
-    wandb.init(project="RAVE", name=f"{args.NAME}")
+    wandb.init(project="RAVE-Tests", name=f"{args.NAME}")
     
     # -------------------------------
 
@@ -155,7 +155,7 @@ if __name__ == "__main__":
         args.SR),
     )
 
-    val = max((2 * len(dataset)) // 500, 1)
+    val = max((2 * len(dataset)) // 100, 1)
     train = len(dataset) - val
     train, val = random_split(
         dataset,
@@ -214,7 +214,8 @@ if __name__ == "__main__":
     trainer = pl.Trainer(
         logger=pl.loggers.TensorBoardLogger(path.join("runs", args.NAME),
                                             name="rave"),
-        gpus=use_gpu,
+        accelerator="gpu",
+        devices=[1],
         callbacks=[validation_checkpoint, last_checkpoint],
         max_epochs=100000,
         max_steps=args.MAX_STEPS,

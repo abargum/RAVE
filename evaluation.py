@@ -99,7 +99,7 @@ preprocess = lambda name: simple_audio_preprocess(
 dataset = SimpleDataset(
         16000,
         "RESNET",
-        torch.device('cuda:0'),
+        torch.device('cuda:2'),
         args.PREPROCESSED,
         args.WAV,
         preprocess_function=preprocess,
