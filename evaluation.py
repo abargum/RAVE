@@ -88,34 +88,37 @@ else:
 
 device = torch.device("cuda:0" if use_gpu else "cpu")
 
+SAMPLE_LENGTH = 65536
+SR = 48000
+
 # ---------------------------------------------------
 # LOAD TRAINING DATA FOR EMBEDDINGS
 # ---------------------------------------------------
 preprocess = lambda name: simple_audio_preprocess(
-        16000,
-        32768,
+        SR,
+        SAMPLE_LENGTH,
     )(name).astype(np.float16)
 
 dataset = SimpleDataset(
-        16000,
+        SR,
         "RESNET",
-        torch.device('cuda:2'),
+        torch.device('cuda:0'),
         args.PREPROCESSED,
         args.WAV,
         preprocess_function=preprocess,
         split_set="full",
         transforms=Perturb([
             lambda x, x_1: (x.astype(np.float32), x_1.astype(np.float32)),
-        ], 16000))
+        ], SR))
 
 dataset_embeddings = []
-p225_entry = get_entries_by_id(dataset, 'p225')
+p225_entry = get_entries_by_id(dataset, 'p226')
 dataset_embeddings.append(p225_entry)
-p226_entry = get_entries_by_id(dataset, 'p226')
+p226_entry = get_entries_by_id(dataset, 'p227')
 dataset_embeddings.append(p226_entry)
-p227_entry = get_entries_by_id(dataset, 'p227')
+p227_entry = get_entries_by_id(dataset, 'p229')
 dataset_embeddings.append(p227_entry)
-p228_entry = get_entries_by_id(dataset, 'p228')
+p228_entry = get_entries_by_id(dataset, 'p232')
 dataset_embeddings.append(p228_entry)
 
 rave = RAVE.load_from_checkpoint(
@@ -181,30 +184,28 @@ for i, example in enumerate(dataset):
     if i == 0:
         print("Creating Spectrograms..")
         length = len(example['data_clean'])
-        x = example['data_clean'].reshape(int(length / 32768), -1)
+        x = example['data_clean'].reshape(int(length / SAMPLE_LENGTH), -1)
         x = torch.from_numpy(x).float().to(device)
-        embedding = torch.tensor(example['speaker_id_avg']).to(device)
+        embedding = torch.tensor(example['speaker_id_avg']).unsqueeze(0).to(device)
         
         y = x.reshape(-1, 1).cpu().numpy()
         plot_spectrogram(y, title="original")
 
         #NO SPEAKER INFO
         z, sp = rave.encode(x, embedding)
-        zeros = torch.zeros(sp.shape).unsqueeze(0).to(device)
+        zeros = torch.zeros(sp.shape).to(device)
         
         y = rave.decode(z, zeros)
         y = y.reshape(-1, 1).cpu().numpy()
         plot_spectrogram(y, title="no_speaker")
         
         #NO CONTENT INFO
-        """
+        z, sp = rave.encode(x, embedding)
         zeros = torch.zeros(z.shape).to(device)
-        print(zeros.shape)
-        z_cat = torch.cat((zeros, sp), 1)
-        y = rave.decode(z_cat)
+        #z_cat = torch.cat((zeros, sp), 1)
+        y = rave.decode(zeros, sp)
         y = y.reshape(-1, 1).cpu().numpy()
         plot_spectrogram(y, title="no_cont")
-        """
         
         print("Creating Conversions..")
     # ---------------------------------------------------
@@ -213,9 +214,10 @@ for i, example in enumerate(dataset):
     if i < max_length:
         
         target_text = get_txt_file(example)
+        #print("TARGET:   ", target_text)
 
         length = len(example['data_clean'])
-        x = example['data_clean'].reshape(int(length / 32768), -1)
+        x = example['data_clean'].reshape(int(length / SAMPLE_LENGTH), -1)
         x = torch.from_numpy(x).float().to(device)
 
         for speaker in dataset_embeddings:
@@ -224,14 +226,22 @@ for i, example in enumerate(dataset):
                 embedding = torch.tensor(speaker[0]).unsqueeze(0).to(device)
                 
                 file_path_conv = path.join(args.OUT, f"{example['speaker_id']}_{str(i)}_{speaker[1]}_conv.wav")
+                file_path_target = path.join(args.OUT, f"{example['speaker_id']}_{str(i)}_{speaker[1]}_target.wav")  
 
                 z, sp = rave.encode(x, embedding)
                 y = rave.decode(z, sp)
                 y = y.reshape(-1, 1).cpu().numpy()
 
-                sf.write(file_path_conv, y, 16000)
+                sf.write(file_path_conv, y, SR)             
+                sf.write(file_path_target, speaker[-1], SR)
+                
+                #OBJECTIVE
+                conv = preprocess_wav(file_path_conv)
+                target = preprocess_wav(file_path_target)
+                
                 result = model.transcribe(file_path_conv)
                 transcribed_text = str(result['text']).replace("▁", " ")
+                #print("PREDICTED:", transcribed_text)
 
                 w_error = wer(target_text, transcribed_text)
                 wer_full += w_error
@@ -240,12 +250,6 @@ for i, example in enumerate(dataset):
                 cer_full += c_error
                 
                 #RESEMBLYZER 
-                file_path_target = path.join(args.OUT, f"{example['speaker_id']}_{str(i)}_{speaker[1]}_target.wav")                
-                sf.write(file_path_target, speaker[-1], 16000)
-                
-                conv = preprocess_wav(file_path_conv)
-                target = preprocess_wav(file_path_target)
-                
                 conv_emb = resemblyzer.embed_utterance(conv)
                 target_emb = resemblyzer.embed_utterance(target)
 

@@ -144,12 +144,12 @@ class ResidualStack(nn.Module):
             res_cum_delay = net[-1].cumulative_delay
 
         self.net = cc.CachedSequential(*net)
-        self.film_conditioning = FiLM_Conditioning(cond_dim=256, num_features=dim)
+        #self.film_conditioning = FiLM_Conditioning(cond_dim=256, num_features=dim)
         self.cumulative_delay = self.net.cumulative_delay + cumulative_delay
 
-    def forward(self, x, speaker):
+    def forward(self, x):
         x = self.net(x)
-        x = self.film_conditioning(x, speaker.unsqueeze(1))
+        #x = self.film_conditioning(x, speaker.unsqueeze(1))
         return x
 
 class UpsampleLayer(nn.Module):
@@ -324,13 +324,16 @@ class Generator_Old(nn.Module):
         self.loud_stride = loud_stride
         self.cumulative_delay = self.synth.cumulative_delay
 
-    def forward(self, x, speaker, add_noise: bool = True):
-        
+    def forward(self, x, add_noise: bool = True):
+        """
         for i, layer in enumerate(self.net):
             if i % 2 != 0 or i == 0:
                 x = layer(x)
             else:
                 x = layer(x, speaker)
+        """
+        
+        x = self.net(x)
 
         if self.use_noise:
             waveform, loudness, noise = self.synth(x)
@@ -682,7 +685,7 @@ class RAVE(pl.LightningModule):
             
         self.speaker_projection = torch.nn.Linear(speaker_size, 256)
 
-        new_latent_size = latent_size 
+        new_latent_size = latent_size + 256
         self.decoder = Generator_Old(
             new_latent_size,
             capacity,
@@ -843,6 +846,7 @@ class RAVE(pl.LightningModule):
         # SPEAKER EMBEDDING AND PITCH EXCITATION
         sp = batch['speaker_emb']
         sp = self.speaker_projection(sp)
+        sp = torch.permute(sp.unsqueeze(1).repeat(1, 128, 1), (0, 2, 1))
 
         x_clean = x.unsqueeze(1)
         x_perturb = batch['data_perturbed_1'].unsqueeze(1)
@@ -853,12 +857,14 @@ class RAVE(pl.LightningModule):
             p.tick("pqmf")
 
         # ENCODE INPUT
-        z = self.encoder(x_clean[:, :5, :])
+        z = self.encoder(x_perturb[:, :5, :])
         predicted_units = self.CE_projection(z)
         p.tick("encode")
+        
+        z = torch.cat((z, sp), 1)
 
         # DECODE LATENT
-        y_pqmf = self.decoder(z, sp, add_noise=self.warmed_up)
+        y_pqmf = self.decoder(z, add_noise=self.warmed_up)
         p.tick("decode")
         
         # CONTENT OF RECONSTRUCTED (Y)
@@ -972,7 +978,7 @@ class RAVE(pl.LightningModule):
         
         CE_loss = torch.nn.functional.cross_entropy(predicted_units, batch['discrete_units_16k'].type(torch.int64))
         
-        loss_gen = distance + loss_adv #+ CE_loss
+        loss_gen = distance + loss_adv + CE_loss
         
         p.tick("gen loss compose")
 
@@ -1025,21 +1031,23 @@ class RAVE(pl.LightningModule):
     def encode(self, x, sp):
 
         # SPEAKER EMBEDDING AND PITCH EXCITATION
+        sp = self.speaker_projection(sp)
+        sp = torch.permute(sp.unsqueeze(1).repeat(1, 128, 1), (0, 2, 1))
+        
         x = x.unsqueeze(1)
         
         if self.pqmf is not None:
             x = self.pqmf(x)
 
         z = self.encoder(x[:, :5, :])
-        sp = self.speaker_projection(sp)
         
-        return z, sp
-    
-    def get_projection(self, z):
-        return self.CE_projection(z)
+        #mean, scale = self.encoder(x[:, :5, :])
+        #z, _ = self.reparametrize(mean, scale)
+        
+        return z, torch.cat((z, sp), 1)
 
-    def decode(self, z, sp):
-        y = self.decoder(z, sp)
+    def decode(self, z):
+        y = self.decoder(z, add_noise=True)
         if self.pqmf is not None:
             y = self.pqmf.inverse(y)
         return y
@@ -1051,6 +1059,7 @@ class RAVE(pl.LightningModule):
         # SPEAKER EMBEDDING AND PITCH EXCITATION
         sp = batch['speaker_emb']
         sp = self.speaker_projection(sp)
+        sp = torch.permute(sp.unsqueeze(1).repeat(1, 128, 1), (0, 2, 1))
 
         x_clean = x.unsqueeze(1)
         
@@ -1058,7 +1067,10 @@ class RAVE(pl.LightningModule):
             x_clean = self.pqmf(x_clean)
         
         z = self.encoder(x_clean[:, :5, :])
-        y = self.decoder(z, sp, add_noise=self.warmed_up)
+        
+        z = torch.cat((z, sp), 1)
+        
+        y = self.decoder(z, add_noise=self.warmed_up)
 
         if self.pqmf is not None:
             x_clean = self.pqmf.inverse(x_clean)
@@ -1073,6 +1085,7 @@ class RAVE(pl.LightningModule):
         #FOR CONVERSION
         speaker_emb_avg = batch['speaker_id_avg']
         speaker_emb_avg = self.speaker_projection(speaker_emb_avg)
+        speaker_emb_avg = torch.permute(speaker_emb_avg.unsqueeze(1).repeat(1, 128, 1), (0, 2, 1))
 
         input_index = 0
         target_index = 1
@@ -1085,7 +1098,9 @@ class RAVE(pl.LightningModule):
             input_conversion = self.pqmf(input_conversion)
 
         z = self.encoder(input_conversion[:, :5, :])
-        converted = self.decoder(z, target_embedding, add_noise=self.warmed_up)
+        z = torch.cat((z, target_embedding), 1)
+        
+        converted = self.decoder(z, add_noise=self.warmed_up)
 
         if self.pqmf is not None:
             converted = self.pqmf.inverse(converted)

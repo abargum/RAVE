@@ -64,13 +64,13 @@ if __name__ == "__main__":
 
         PREPROCESSED = None
         WAV = None
-        SR = 16000
-        N_SIGNAL = 32768
+        SR = 48000
+        N_SIGNAL = 65536
         MAX_STEPS = setting(default=6000000, small=3000000, large=6000000)
         VAL_EVERY = 10000
         BLOCK_SIZE = 128
 
-        BATCH = 8
+        BATCH = 4
 
         SPEAKER_ENCODER = 'RESNET'
         CONTRASTIVE_LOSS = False
@@ -85,7 +85,7 @@ if __name__ == "__main__":
     # -------------------------------
     # Initialize W and B
     # -------------------------------
-    wandb.init(project="RAVE-Tests", name=f"{args.NAME}")
+    wandb.init(project="RAVE", name=f"{args.NAME}")
     
     # -------------------------------
 
@@ -138,7 +138,7 @@ if __name__ == "__main__":
     dataset = SimpleDataset(
         args.SR,
         args.SPEAKER_ENCODER,
-        torch.device('cuda'),
+        torch.device('cuda:1'),
         args.PREPROCESSED,
         args.WAV,
         preprocess_function=preprocess,
@@ -155,7 +155,7 @@ if __name__ == "__main__":
         args.SR),
     )
 
-    val = max((2 * len(dataset)) // 100, 1)
+    val = max((2 * len(dataset)) // 500, 1)
     train = len(dataset) - val
     train, val = random_split(
         dataset,
@@ -215,7 +215,7 @@ if __name__ == "__main__":
         logger=pl.loggers.TensorBoardLogger(path.join("runs", args.NAME),
                                             name="rave"),
         accelerator="gpu",
-        devices=[1],
+        devices=[0],
         callbacks=[validation_checkpoint, last_checkpoint],
         max_epochs=100000,
         max_steps=args.MAX_STEPS,

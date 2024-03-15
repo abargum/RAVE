@@ -1,0 +1,6 @@
+[submodule "AGAIN-VC"]
+	path = AGAIN-VC
+	url = https://github.com/KimythAnly/AGAIN-VC.git
+[submodule "Speech-Backbones"]
+	path = Speech-Backbones
+	url = https://github.com/huawei-noah/Speech-Backbones.git

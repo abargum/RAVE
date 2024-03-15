@@ -33,8 +33,8 @@ class args(Config):
 
 args.parse_args()
 
-length = 32768
-sr = 16000
+length = 65536
+sr = 48000
 
 # ---------------------------------------------------        
 # GPU DISCOVERY
@@ -51,7 +51,7 @@ else:
     print("No GPU found.")
     use_gpu = 0
 
-device = torch.device("cuda:0" if use_gpu else "cpu")
+device = torch.device("cuda" if use_gpu else "cpu")
 
 # ---------------------------------------------------
 # LOAD TRAINING DATA FOR EMBEDDINGS
@@ -64,8 +64,10 @@ preprocess = lambda name: simple_audio_preprocess(
 dataset = SimpleDataset(
         sr,
         "RESNET",
-        torch.device('cuda:0'),
-        'data/audio-eval-16k',
+        torch.device('cuda'),
+        #REMEMBER TO CHANGE THIS
+        'data/audio-eval-48k',
+        # ----------------------
         'audio',
         preprocess_function=preprocess,
         split_set="full",
@@ -99,23 +101,23 @@ for audio in audios:
     # LOAD AUDIO TO TENSOR
     x, sr = li.load(audio, sr=rave.sr)
     
-    val = int(np.ceil((len(x) / 32768)))
-    N_pad = 32768 * val
+    val = int(np.ceil((len(x) / 65536)))
+    N_pad = 65536 * val
     pad = (N_pad - (len(x) % N_pad)) % N_pad
     x = np.pad(x, (0, pad))
     x = x.reshape(-1, N_pad)
     
     x = torch.from_numpy(x).float().to(device)
-    x = x.reshape(int(x.shape[-1] / 32768), -1)
+    x = x.reshape(int(x.shape[-1] / 65536), -1)
     
     
     z, sp = rave.encode(x, embedding)
     y = rave.decode(z, sp)
     y = y.reshape(-1, 1).cpu().numpy()
     
-    sf.write(path.join(args.OUT, f"reconstruction_{audio_name}.wav"), y, 16000)
-    sf.write(path.join(args.OUT, f"input_{audio_name}.wav"), x.reshape(-1).cpu().numpy(), 16000)
-    sf.write(path.join(args.OUT, "target.wav"), target, 16000)
+    sf.write(path.join(args.OUT, f"reconstruction_{audio_name}.wav"), y, 48000)
+    sf.write(path.join(args.OUT, f"input_{audio_name}.wav"), x.reshape(-1).cpu().numpy(), 48000)
+    sf.write(path.join(args.OUT, "target.wav"), target, 48000)
 
 
     # PAD AUDIO

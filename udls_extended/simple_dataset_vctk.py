@@ -78,14 +78,16 @@ class SimpleDataset_VCTK(torch.utils.data.Dataset):
 
         assert folder_list is not None or file_list is not None
         makedirs(out_database_location, exist_ok=True)
+        
+        print(device)
 
         self.env = SimpleLMDBDataset(out_database_location, map_size)
         
         self.speaker_model = speaker_model
         if speaker_model == "RESNET":
-            self.speaker_encoder = self.load_resnet_encoder("speaker_embedding/resnet34sel_pretrained.pt", device)
+            self.speaker_encoder = self.load_resnet_encoder("speaker_embedding/resnet34sel_pretrained.pt", "cuda")
         elif speaker_model == "ECAPA":
-            self.speaker_encoder = self.load_ecapa_tdnn("speaker_embedding/ecapa_tdnn_pretrained.pt", device)
+            self.speaker_encoder = self.load_ecapa_tdnn("speaker_embedding/ecapa_tdnn_pretrained.pt", "cuda")
         else:
             print("PLEASE CHOOSE A SPEAKER ENCODER")
 
@@ -99,7 +101,7 @@ class SimpleDataset_VCTK(torch.utils.data.Dataset):
         self.sampling_rate = sampling_rate
         self.device = device
         
-        self.discrete_units = torch.hub.load("bshall/hubert:main",f"hubert_discrete", trust_repo=True).cuda()
+        self.discrete_units = torch.hub.load("bshall/hubert:main",f"hubert_discrete", trust_repo=True).to(torch.device("cuda"))
 
         # IF NO DATA INSIDE DATASET: PREPROCESS
         self.len = len(self.env)
@@ -160,9 +162,11 @@ class SimpleDataset_VCTK(torch.utils.data.Dataset):
 
         avg_speaker_embs = {}
         resnet_emb_gmms = {}
+        
 
         # POPULATE WAV LIST
         if self.folder_list is not None:
+        
             for f, folder in enumerate(self.folder_list.split(",")):
                 print("SPEAKER EMBEDDINGS: Recursive search in {}".format(folder))
                 if len(os.listdir(folder)) > 0:
@@ -174,8 +178,8 @@ class SimpleDataset_VCTK(torch.utils.data.Dataset):
                             print("Calculating utterance embeddings for", speaker_id)
                             for ext in extension:
                                 wavs.extend(list(Path(folder, speaker_id).rglob(ext)))
-
-                            if len(wavs) >= 15:
+                            
+                            if len(wavs) >= 1:
                                 # CALCULATE UTTERANCE EMBEDDINGS
                                 loader = tqdm(wavs)
                                 for wav in loader:
@@ -203,7 +207,7 @@ class SimpleDataset_VCTK(torch.utils.data.Dataset):
                                 for f in files:
                                     os.remove(f)
                                 os.rmdir(Path(folder, speaker_id))
-
+            
             wavs = []
 
             # DATA PROCESSING
@@ -226,7 +230,7 @@ class SimpleDataset_VCTK(torch.utils.data.Dataset):
                         speaker_avg = avg_speaker_embs[speaker_id]
                         
                         o_tens = torch.tensor(o, dtype=torch.float32).to(self.device)
-                        #o_resampled = resample(o_tens, self.sampling_rate, 16000)
+                        o_resampled = resample(o_tens, self.sampling_rate, 16000)
                         target_units = self.discrete_units.units(o_tens.unsqueeze(0).unsqueeze(0))
                         
                         self.env[idx] = {
