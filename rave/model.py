@@ -10,6 +10,8 @@ import torch.nn as nn
 from einops import rearrange
 from sklearn.decomposition import PCA
 
+import wandb
+
 import rave.core
 
 from . import blocks
@@ -149,7 +151,7 @@ class RAVE(pl.LightningModule):
         self.warmup_quantize = warmup_quantize
         self.weights = weights
 
-        self.warmed_up = False
+        self.warmed_up = True
 
         # CONSTANTS
         self.sr = sampling_rate
@@ -328,6 +330,13 @@ class RAVE(pl.LightningModule):
             self.log("loss_dis", loss_dis)
             self.log("pred_real", pred_real.mean())
             self.log("pred_fake", pred_fake.mean())
+            
+        wandb.log({
+            "loss_dis": loss_dis,
+            "loss_gen": loss_gen,
+            "dis rave": loss_dis,
+            "adv rave": loss_adv
+        })
 
         self.log_dict(loss_gen)
         p.tick('logging')
@@ -427,6 +436,13 @@ class RAVE(pl.LightningModule):
 
         if self.integrator is not None:
             y = self.integrator(y)
+            
+        wandb.log({
+                f"audio_val_{self.eval_number}":
+                wandb.Audio(y,
+                            caption="audio",
+                            sample_rate=self.sr)
+            })
 
         self.logger.experiment.add_audio("audio_val", y, self.eval_number,
                                          self.sr)

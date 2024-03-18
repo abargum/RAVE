@@ -6,12 +6,20 @@ from typing import Any, Dict
 import gin
 import pytorch_lightning as pl
 import torch
-from absl import flags
+from absl import flags, app
 from torch.utils.data import DataLoader
 
-import rave
+try:
+    import rave
+except:
+    import sys, os 
+    sys.path.append(os.path.abspath('.'))
+    import rave
+    
 import rave.core
 import rave.dataset
+
+import wandb
 
 FLAGS = flags.FLAGS
 
@@ -112,6 +120,11 @@ def main(argv):
     model = rave.RAVE()
 
     print(model)
+    
+    # -------------------------------
+    # Initialize W and B
+    # -------------------------------
+    wandb.init(project="RAVE", name=f"{FLAGS.name}")
 
     if FLAGS.derivative:
         model.integrator = rave.dataset.get_derivator_integrator(model.sr)[1]
@@ -211,3 +224,7 @@ def main(argv):
         config_out.write(gin.operative_config_str())
 
     trainer.fit(model, train, val, ckpt_path=run)
+    
+if __name__ == "__main__": 
+    app.run(main)
+    
