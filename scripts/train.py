@@ -145,6 +145,7 @@ def main(argv):
                        True,
                        drop_last=True,
                        num_workers=num_workers)
+    
     val = DataLoader(val, FLAGS.batch, False, num_workers=num_workers)
 
     # CHECKPOINT CALLBACKS
@@ -194,7 +195,7 @@ def main(argv):
         rave.model.WarmupCallback(),
         rave.model.QuantizeCallback(),
         rave.core.LoggerCallback(rave.core.ProgressLogger(RUN_NAME)),
-        rave.model.BetaWarmupCallback(),
+        #rave.model.BetaWarmupCallback(),
     ]
 
     if FLAGS.ema is not None:
