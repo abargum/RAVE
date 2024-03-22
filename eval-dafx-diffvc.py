@@ -57,6 +57,7 @@ else:
     use_gpu = 0
 
 device = torch.device("cuda:0" if use_gpu else "cpu")
+device = device = torch.device("cuda:0")
 
 # ---------------------------------------------------        
 # ARGS
@@ -79,6 +80,7 @@ rave = RAVE.load_from_checkpoint(
     strict=False,
 ).eval().to(device)
 
+"""
 # ---------------------------------------------------        
 # SPEED
 # ---------------------------------------------------
@@ -111,7 +113,7 @@ synthesis_speed = (((end_time - start_time) / num_trials) * 48000) / 65536
 print("AVERAGE ITERATION -------- :", synthesis_speed)
 print("SYNTHESIS SPEED -------- :", (48000 / synthesis_speed) / 1000, "kHz")
 print("REAL TIME FACTOR -------- :", ((end_time - start_time) / num_trials) / (65536/48000))
-
+"""
 # ---------------------------------------------------        
 # FUNCTIONS
 # ---------------------------------------------------

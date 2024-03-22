@@ -10,8 +10,8 @@ from tqdm import tqdm
 from scipy.io.wavfile import write
 
 import torch
-#use_gpu = torch.cuda.is_available()
-use_gpu = False
+use_gpu = True #torch.cuda.is_available()
+#use_gpu = False
 
 import librosa
 from librosa.core import load
@@ -141,8 +141,6 @@ def get_converison_from_diffvc(src_path, tgt_path):
     if use_gpu:
         embed_target = embed_target.cuda()
         
-    start_time = timer.time()
-        
     # performing voice conversion
     mel_encoded, mel_ = generator.forward(mel_source, mel_source_lengths, mel_target, mel_target_lengths, embed_target, 
                                           n_timesteps=30, mode='ml')
@@ -155,8 +153,6 @@ def get_converison_from_diffvc(src_path, tgt_path):
         
     with torch.no_grad():
         audio = hifigan_universal.forward(mel).cpu().squeeze().clamp(-1, 1)
-        
-    end_time = timer.time()
     
-    return audio, start_time, end_time
+    return audio
     
