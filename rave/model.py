@@ -215,11 +215,11 @@ class RAVE(pl.LightningModule):
         else:
             z_pre_reg = self.encoder(x_p_multiband)
 
-        #z, reg = self.encoder.reparametrize(z_pre_reg)[:2]
+        z, reg = self.encoder.reparametrize(z_pre_reg)[:2]
         p.tick('encode')
 
         # DECODE LATENT
-        y_multiband = self.decoder(z_pre_reg)
+        y_multiband = self.decoder(z)
 
         p.tick('decode')
 
@@ -352,6 +352,7 @@ class RAVE(pl.LightningModule):
     def encode(self, x):
         if self.pqmf is not None and self.enable_pqmf_encode:
             x = self.pqmf(x)
+        #z = self.encoder(x)
         z, = self.encoder.reparametrize(self.encoder(x))[:1]
         return z
 
@@ -383,7 +384,7 @@ class RAVE(pl.LightningModule):
             
         mean = None
 
-        #z = self.encoder.reparametrize(z)[0]
+        z = self.encoder.reparametrize(z)[0]
         y = self.decoder(z)
 
         if self.pqmf is not None:

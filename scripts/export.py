@@ -15,7 +15,14 @@ import nn_tilde
 import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
-from absl import flags
+from absl import flags, app
+
+try:
+    import rave
+except:
+    import sys, os 
+    sys.path.append(os.path.abspath('.'))
+    import rave
 
 import rave
 import rave.blocks
@@ -207,7 +214,9 @@ class ScriptedRAVE(nn_tilde.Module):
             x = self.pqmf(x)
 
         z = self.encoder(x)
+        #print("Z normal:", z.shape)
         z = self.post_process_latent(z)
+        #print("Z RVQ:", z.shape)
         return z
 
     @torch.jit.export
@@ -219,6 +228,7 @@ class ScriptedRAVE(nn_tilde.Module):
             z = torch.cat([z, z], 0)
 
         z = self.pre_process_latent(z)
+        
         y = self.decoder(z)
 
         if self.pqmf is not None:
@@ -400,3 +410,7 @@ def main(argv):
 
     logging.info(
         f"all good ! model exported to {os.path.join(FLAGS.run, model_name)}")
+
+        
+if __name__ == "__main__": 
+    app.run(main)
