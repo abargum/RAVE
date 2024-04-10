@@ -97,7 +97,7 @@ class ScriptedRAVE(nn_tilde.Module):
             latent_size = max(
                 np.argmax(pretrained.fidelity.numpy() > fidelity), 1)
             latent_size = 2**math.ceil(math.log2(latent_size))
-            self.latent_size = latent_size
+            self.latent_size = 64 #latent_size
 
         elif isinstance(pretrained.encoder, rave.blocks.DiscreteEncoder):
             self.latent_size = 128 #pretrained.encoder.num_quantizers
@@ -207,7 +207,6 @@ class ScriptedRAVE(nn_tilde.Module):
             x = self.pqmf(x)
 
         z = self.encoder(x)
-        print("Z after enc:", z.shape)
         #z = self.post_process_latent(z)
         #print("Z after post:", z.shape)
         return z
@@ -373,8 +372,8 @@ def main(argv):
 
     logging.info("warmup pass")
 
-    x = torch.zeros(1, 1, 2**14)
-    pretrained(x)
+    #x = torch.zeros(1, 1, 2**14)
+    #pretrained(x)
 
     logging.info("optimize model")
 
