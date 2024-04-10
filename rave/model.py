@@ -219,10 +219,8 @@ class RAVE(pl.LightningModule):
         else:
             z_pre_reg = self.encoder(x_p_multiband)
 
-        print("Z after encoder:", z_pre_reg.shape)
-
         z, reg = self.encoder.reparametrize(z_pre_reg)[:2]
-        print("Z after quantization:", z.shape)
+
         p.tick('encode')
 
         # DECODE LATENT
