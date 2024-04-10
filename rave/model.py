@@ -192,6 +192,10 @@ class RAVE(pl.LightningModule):
         return feature_real, feature_fake
 
     def training_step(self, batch, batch_idx):
+
+        if isinstance(self.encoder, blocks.VariationalEncoder):
+            print("VARIATIONAL ENCODER INCLUDED")
+
         p = Profiler()
         gen_opt, dis_opt = self.optimizers()
 
@@ -215,7 +219,10 @@ class RAVE(pl.LightningModule):
         else:
             z_pre_reg = self.encoder(x_p_multiband)
 
+        print("Z after encoder:", z_pre_reg.shape)
+
         z, reg = self.encoder.reparametrize(z_pre_reg)[:2]
+        print("Z after quantization:", z.shape)
         p.tick('encode')
 
         # DECODE LATENT
@@ -309,8 +316,8 @@ class RAVE(pl.LightningModule):
         loss_gen.update(distances)
         p.tick('update loss gen dict')
 
-        #if reg.item():
-        #    loss_gen['regularization'] = reg * self.beta_factor
+        if reg.item():
+            loss_gen['regularization'] = reg * self.beta_factor
 
         if self.warmed_up:
             loss_gen['feature_matching'] = feature_matching_distance
@@ -401,7 +408,7 @@ class RAVE(pl.LightningModule):
         return torch.cat([x, y], -1), mean
 
     def validation_epoch_end(self, out):
-        """
+        
         if not self.receptive_field.sum():
             print("Computing receptive field for this configuration...")
             lrf, rrf = rave.core.get_rave_receptive_field(self)
@@ -412,12 +419,10 @@ class RAVE(pl.LightningModule):
             )
 
         if not len(out): return
-        """
 
         audio, z = list(zip(*out))
         audio = list(map(lambda x: x.cpu(), audio))
         
-        """
         # LATENT SPACE ANALYSIS
         if not self.warmed_up and isinstance(self.encoder,
                                              blocks.VariationalEncoder):
@@ -444,7 +449,6 @@ class RAVE(pl.LightningModule):
                     f"fidelity_{p}",
                     np.argmax(var > p).astype(np.float32),
                 )
-        """
 
         y = torch.cat(audio, 0)[:8].reshape(-1).numpy()
 

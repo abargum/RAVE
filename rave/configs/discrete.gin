@@ -1,6 +1,6 @@
 from __gin__ import dynamic_registration
 
-include "configs/v2.gin"
+include "rave/configs/v2.gin"
 
 import rave
 from rave import core
