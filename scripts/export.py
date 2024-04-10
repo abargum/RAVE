@@ -15,7 +15,7 @@ import nn_tilde
 import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
-from absl import flags
+from absl import flags, app
 
 import rave
 import rave.blocks
@@ -100,7 +100,7 @@ class ScriptedRAVE(nn_tilde.Module):
             self.latent_size = latent_size
 
         elif isinstance(pretrained.encoder, rave.blocks.DiscreteEncoder):
-            self.latent_size = pretrained.encoder.num_quantizers
+            self.latent_size = 128 #pretrained.encoder.num_quantizers
 
         elif isinstance(pretrained.encoder, rave.blocks.WasserteinEncoder):
             self.latent_size = pretrained.latent_size
@@ -207,7 +207,9 @@ class ScriptedRAVE(nn_tilde.Module):
             x = self.pqmf(x)
 
         z = self.encoder(x)
-        z = self.post_process_latent(z)
+        print("Z after enc:", z.shape)
+        #z = self.post_process_latent(z)
+        #print("Z after post:", z.shape)
         return z
 
     @torch.jit.export
@@ -218,7 +220,7 @@ class ScriptedRAVE(nn_tilde.Module):
         if self.stereo:
             z = torch.cat([z, z], 0)
 
-        z = self.pre_process_latent(z)
+        #z = self.pre_process_latent(z)
         y = self.decoder(z)
 
         if self.pqmf is not None:
@@ -400,3 +402,6 @@ def main(argv):
 
     logging.info(
         f"all good ! model exported to {os.path.join(FLAGS.run, model_name)}")
+
+if __name__ == "__main__": 
+    app.run(main)
