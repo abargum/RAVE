@@ -9,6 +9,8 @@ import torch
 import torch.nn as nn
 from einops import rearrange
 from sklearn.decomposition import PCA
+from torchaudio.functional import resample
+import torch.nn.functional as F
 
 import wandb
 
@@ -98,6 +100,20 @@ class BetaWarmupCallback(pl.Callback):
     def load_state_dict(self, state_dict):
         self.state.update(state_dict)
 
+class CrossEntropyProjection(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.layer_norm = torch.nn.LayerNorm(128)
+        self.proj = nn.Conv1d(128, 100, 1, bias=False)
+        self.softmax = torch.nn.Softmax(dim=1)
+        
+    def forward(self, x):
+        z_for_CE = self.layer_norm(x)
+        z_for_CE = self.proj(z_for_CE)
+        z_for_CE = F.interpolate(z_for_CE, 148)
+        z_for_CE = self.softmax(z_for_CE)
+        return z_for_CE
+
 
 @gin.configurable
 class RAVE(pl.LightningModule):
@@ -169,6 +185,10 @@ class RAVE(pl.LightningModule):
 
         self.register_buffer("receptive_field", torch.tensor([0, 0]).long())
 
+        self.ce_projection = CrossEntropyProjection()
+        self.discrete_units = torch.hub.load("bshall/hubert:main",f"hubert_discrete",
+                                             trust_repo=True).to(torch.device("cuda"))
+
     def configure_optimizers(self):
         gen_p = list(self.encoder.parameters())
         gen_p += list(self.decoder.parameters())
@@ -196,6 +216,12 @@ class RAVE(pl.LightningModule):
         if isinstance(self.encoder, blocks.VariationalEncoder):
             print("VARIATIONAL ENCODER INCLUDED")
 
+        x_resampled = resample(batch[0], self.sr, 16000)
+        target_units = torch.zeros(x_resampled.shape[0], 148)
+        
+        for i, sequence in enumerate(x_resampled):
+            target_units[i, :] = self.discrete_units.units(sequence.unsqueeze(0).unsqueeze(0))
+
         p = Profiler()
         gen_opt, dis_opt = self.optimizers()
 
@@ -215,16 +241,20 @@ class RAVE(pl.LightningModule):
 
         # ENCODE INPUT
         if self.enable_pqmf_encode:
-            z_pre_reg = self.encoder(x_p_multiband)
+            z_pre_reg = self.encoder(x_p_multiband[:, :6, :])
         else:
             z_pre_reg = self.encoder(x_p_multiband)
 
-        z, reg = self.encoder.reparametrize(z_pre_reg)[:2]
+        projected_z = self.ce_projection(z_pre_reg)
+        ce_loss = torch.nn.functional.cross_entropy(projected_z,
+                                                    target_units.type(torch.int64).to(x.device))
+
+        #z, reg = self.encoder.reparametrize(z_pre_reg)[:2]
 
         p.tick('encode')
 
         # DECODE LATENT
-        y_multiband = self.decoder(z)
+        y_multiband = self.decoder(z_pre_reg)
 
         p.tick('decode')
 
@@ -312,10 +342,11 @@ class RAVE(pl.LightningModule):
         # COMPOSE GEN LOSS
         loss_gen = {}
         loss_gen.update(distances)
+        loss_gen['unit_loss'] = ce_loss
         p.tick('update loss gen dict')
 
-        if reg.item():
-            loss_gen['regularization'] = reg * self.beta_factor
+        #if reg.item():
+        #    loss_gen['regularization'] = reg * self.beta_factor
 
         if self.warmed_up:
             loss_gen['feature_matching'] = feature_matching_distance
@@ -357,8 +388,8 @@ class RAVE(pl.LightningModule):
     def encode(self, x):
         if self.pqmf is not None and self.enable_pqmf_encode:
             x = self.pqmf(x)
-        #z = self.encoder(x)
-        z, = self.encoder.reparametrize(self.encoder(x))[:1]
+        z = self.encoder(x[:, :6, :])
+        #z, = self.encoder.reparametrize(self.encoder(x))[:1]
         return z
 
     def decode(self, z):
@@ -377,7 +408,7 @@ class RAVE(pl.LightningModule):
             x_multiband = self.pqmf(x)
 
         if self.enable_pqmf_encode:
-            z = self.encoder(x_multiband)
+            z = self.encoder(x_multiband[:, :6, :])
 
         else:
             z = self.encoder(x)
@@ -389,7 +420,7 @@ class RAVE(pl.LightningModule):
             
         mean = None
 
-        z = self.encoder.reparametrize(z)[0]
+        #z = self.encoder.reparametrize(z)[0]
         y = self.decoder(z)
 
         if self.pqmf is not None:

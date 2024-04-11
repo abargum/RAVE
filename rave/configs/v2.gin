@@ -28,7 +28,7 @@ core.get_augmented_latent_size:
 
 # ENCODER
 blocks.EncoderV2:
-    data_size = %N_BAND
+    data_size = 6 #%N_BAND
     capacity = %CAPACITY
     ratios = %RATIOS
     latent_size = %LATENT_SIZE
@@ -67,11 +67,18 @@ discriminator.MultiScaleSpectralDiscriminator1d:
     scales = [4096, 2048, 1024, 512, 256]
     convnet = @spectral/discriminator.ConvNet
 
+discriminator.MultiScaleSpectralDiscriminator:
+    scales = [4096, 2048, 1024, 512, 256]
+    convnet = @discriminator.EncodecConvNet
+
+discriminator.EncodecConvNet:
+    capacity = 32
+
 discriminator.CombineDiscriminators:
     discriminators = [
         @discriminator.MultiPeriodDiscriminator,
         @discriminator.MultiScaleDiscriminator,
-        # @discriminator.MultiScaleSpectralDiscriminator1d,
+        @discriminator.MultiScaleSpectralDiscriminator,
     ]
 
 feature_matching/core.mean_difference:
