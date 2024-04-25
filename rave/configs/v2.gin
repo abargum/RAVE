@@ -78,7 +78,7 @@ discriminator.CombineDiscriminators:
     discriminators = [
         @discriminator.MultiPeriodDiscriminator,
         @discriminator.MultiScaleDiscriminator,
-        @discriminator.MultiScaleSpectralDiscriminator,
+        # @discriminator.MultiScaleSpectralDiscriminator,
     ]
 
 feature_matching/core.mean_difference:

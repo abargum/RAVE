@@ -105,13 +105,13 @@ class CrossEntropyProjection(nn.Module):
         super().__init__()
         self.layer_norm = torch.nn.LayerNorm(128)
         self.proj = nn.Conv1d(128, 100, 1, bias=False)
-        self.softmax = torch.nn.Softmax(dim=1)
+        #self.softmax = torch.nn.Softmax(dim=1)
         
     def forward(self, x):
         z_for_CE = self.layer_norm(x)
         z_for_CE = self.proj(z_for_CE)
         z_for_CE = F.interpolate(z_for_CE, 148)
-        z_for_CE = self.softmax(z_for_CE)
+        #z_for_CE = self.softmax(z_for_CE)
         return z_for_CE
 
 
@@ -190,14 +190,18 @@ class RAVE(pl.LightningModule):
                                              trust_repo=True).to(torch.device("cuda"))
 
     def configure_optimizers(self):
-        gen_p = list(self.encoder.parameters())
-        gen_p += list(self.decoder.parameters())
+        enc_p = list(self.encoder.parameters())
+        enc_p += list(self.ce_projection.parameters())
+        
+        #gen_p = list(self.encoder.parameters())
+        gen_p = list(self.decoder.parameters())
         dis_p = list(self.discriminator.parameters())
 
+        enc_opt = torch.optim.Adam(enc_p, 1e-4, (.5, .9))
         gen_opt = torch.optim.Adam(gen_p, 1e-4, (.5, .9))
         dis_opt = torch.optim.Adam(dis_p, 1e-4, (.5, .9))
 
-        return gen_opt, dis_opt
+        return enc_opt, gen_opt, dis_opt
 
     def split_features(self, features):
         feature_real = []
@@ -223,7 +227,7 @@ class RAVE(pl.LightningModule):
             target_units[i, :] = self.discrete_units.units(sequence.unsqueeze(0).unsqueeze(0))
 
         p = Profiler()
-        gen_opt, dis_opt = self.optimizers()
+        enc_opt, gen_opt, dis_opt = self.optimizers()
 
         x = batch[0].unsqueeze(1)
         x_p = batch[1].unsqueeze(1)
@@ -254,7 +258,7 @@ class RAVE(pl.LightningModule):
         p.tick('encode')
 
         # DECODE LATENT
-        y_multiband = self.decoder(z_pre_reg)
+        y_multiband = self.decoder(z_pre_reg.detach())
 
         p.tick('decode')
 
@@ -342,7 +346,7 @@ class RAVE(pl.LightningModule):
         # COMPOSE GEN LOSS
         loss_gen = {}
         loss_gen.update(distances)
-        loss_gen['unit_loss'] = ce_loss
+        #loss_gen['unit_loss'] = ce_loss
         p.tick('update loss gen dict')
 
         #if reg.item():
@@ -360,11 +364,14 @@ class RAVE(pl.LightningModule):
             dis_opt.step()
             p.tick('dis opt')
         else:
+            enc_opt.zero_grad()
             gen_opt.zero_grad()
+            ce_loss.backward(retain_graph=True)
             loss_gen_value = 0.
             for k, v in loss_gen.items():
                 loss_gen_value += v * self.weights.get(k, 1.)
             loss_gen_value.backward()
+            enc_opt.step()
             gen_opt.step()
 
         # LOGGING
@@ -379,7 +386,8 @@ class RAVE(pl.LightningModule):
             "loss_dis": loss_dis,
             "loss_gen": loss_gen,
             "dis rave": loss_dis,
-            "adv rave": loss_adv
+            "adv rave": loss_adv,
+            "unit_loss": ce_loss
         })
 
         self.log_dict(loss_gen)

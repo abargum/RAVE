@@ -17,13 +17,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from absl import flags, app
 
-try:
-    import rave
-except:
-    import sys, os 
-    sys.path.append(os.path.abspath('.'))
-    import rave
-
 import rave
 import rave.blocks
 import rave.core
@@ -104,10 +97,10 @@ class ScriptedRAVE(nn_tilde.Module):
             latent_size = max(
                 np.argmax(pretrained.fidelity.numpy() > fidelity), 1)
             latent_size = 2**math.ceil(math.log2(latent_size))
-            self.latent_size = latent_size
+            self.latent_size = 64 #latent_size
 
         elif isinstance(pretrained.encoder, rave.blocks.DiscreteEncoder):
-            self.latent_size = pretrained.encoder.num_quantizers
+            self.latent_size = 128 #pretrained.encoder.num_quantizers
 
         elif isinstance(pretrained.encoder, rave.blocks.WasserteinEncoder):
             self.latent_size = pretrained.latent_size
@@ -128,7 +121,7 @@ class ScriptedRAVE(nn_tilde.Module):
 
         x_m = x.clone() if self.pqmf is None else self.pqmf(x)
 
-        z = self.encoder(x_m)
+        z = self.encoder(x_m[:, :6, :])
 
         ratio_encode = x_len // z.shape[-1]
 
@@ -213,10 +206,9 @@ class ScriptedRAVE(nn_tilde.Module):
         if self.pqmf is not None:
             x = self.pqmf(x)
 
-        z = self.encoder(x)
-        #print("Z normal:", z.shape)
-        z = self.post_process_latent(z)
-        #print("Z RVQ:", z.shape)
+        z = self.encoder(x[: ,:6, :])
+        #z = self.post_process_latent(z)
+        #print("Z after post:", z.shape)
         return z
 
     @torch.jit.export
@@ -227,8 +219,7 @@ class ScriptedRAVE(nn_tilde.Module):
         if self.stereo:
             z = torch.cat([z, z], 0)
 
-        z = self.pre_process_latent(z)
-        
+        #z = self.pre_process_latent(z)
         y = self.decoder(z)
 
         if self.pqmf is not None:
@@ -381,8 +372,8 @@ def main(argv):
 
     logging.info("warmup pass")
 
-    x = torch.zeros(1, 1, 2**14)
-    pretrained(x)
+    #x = torch.zeros(1, 1, 2**14)
+    #pretrained(x)
 
     logging.info("optimize model")
 
@@ -411,6 +402,5 @@ def main(argv):
     logging.info(
         f"all good ! model exported to {os.path.join(FLAGS.run, model_name)}")
 
-        
 if __name__ == "__main__": 
     app.run(main)
