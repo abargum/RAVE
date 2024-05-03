@@ -18,8 +18,17 @@ except:
     import rave
     
 import rave.core
+from rave.core import load_speaker_statedict
 import rave.dataset
 from rave.model import RAVE
+
+#from rave.blocks import SpeakerRAVE
+from rave.CombinedRave import SpeakerRAVE
+
+from sklearn.manifold import TSNE
+import matplotlib.pyplot as plt
+import numpy as np
+import cached_conv as cc
 
 FLAGS = flags.FLAGS
 
@@ -34,11 +43,11 @@ flags.DEFINE_string('db_path',
 flags.DEFINE_integer('max_steps',
                      6000000,
                      help='Maximum number of training steps')
-flags.DEFINE_integer('val_every', 10000, help='Checkpoint model every n steps')
+flags.DEFINE_integer('val_every', 100, help='Checkpoint model every n steps')
 flags.DEFINE_integer('n_signal',
                      131072,
                      help='Number of audio samples to use during training')
-flags.DEFINE_integer('batch', 8, help='Batch size')
+flags.DEFINE_integer('batch', 4, help='Batch size')
 flags.DEFINE_string('ckpt',
                     None,
                     help='Path to previous checkpoint of the run')
@@ -59,6 +68,9 @@ flags.DEFINE_float('ema',
 flags.DEFINE_bool('progress',
                   default=True,
                   help='Display training progress bar')
+flags.DEFINE_bool('eval',
+                  default=False,
+                  help='Plot speaker embeddings')
 
 
 class EMA(pl.Callback):
@@ -144,7 +156,7 @@ def main(argv):
                        True,
                        drop_last=True,
                        num_workers=num_workers)
-    val = DataLoader(val, FLAGS.batch, False, num_workers=num_workers)
+    val = DataLoader(val, FLAGS.batch, drop_last=True, num_workers=num_workers)
 
     # CHECKPOINT CALLBACKS
     validation_checkpoint = pl.callbacks.ModelCheckpoint(monitor="validation",
@@ -171,7 +183,59 @@ def main(argv):
         gpu = FLAGS.gpu or rave.core.setup_gpu()
 
     print('selected gpu:', gpu)
+    print('loading speaker model')
 
+    # -------------------------------
+    # Plot speaker T-SNE
+    # -------------------------------
+    
+    if FLAGS.eval:
+        speaker_model = SpeakerRAVE()
+        state_dict = load_speaker_statedict("rave/pretrained/model000000081.model", gpu[0])
+        speaker_model.load_state_dict(state_dict)
+        speaker_model.eval()
+        
+        speaker_E = []
+        speaker_ID = []
+    
+        for i, entry in enumerate(iter(train)):
+            if i < 100:
+                embed = speaker_model(torch.tensor(entry[0], dtype=torch.float32))
+                speaker_E.append(embed.detach().numpy())
+                speaker_ID.append(entry[-1])
+                if i % 100 == 0:
+                    print(i)
+            else:
+                break
+    
+        speaker_E = np.array(speaker_E).reshape(-1, 256)
+        
+        flat_ids = []
+        for ids in speaker_ID:
+            flat_ids.extend(ids)
+                    
+        fig, ax = plt.subplots()
+        
+        # Create a dictionary to map unique speaker IDs to colors
+        unique_speakers = list(set(flat_ids))
+        colors = plt.cm.get_cmap('tab20', len(unique_speakers))
+        color_dict = {speaker: colors(i) for i, speaker in enumerate(unique_speakers)}
+    
+        tsne = TSNE(n_components=2, random_state=42)
+        components_tsne = tsne.fit_transform(speaker_E)
+    
+        for i, speaker in enumerate(unique_speakers):
+            indices = [j for j, s in enumerate(flat_ids) if s == speaker]
+            ax.scatter(components_tsne[indices, 0], components_tsne[indices, 1], label=speaker, color=color_dict[speaker])
+    
+        # Display a legend outside the plot
+        ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+        plt.xlabel('Principal Component 1')
+        plt.ylabel('Principal Component 2')
+        plt.savefig('tsne.png', bbox_inches='tight')
+        
+    # -------------------------------
+    
     accelerator = None
     devices = None
     if FLAGS.gpu == [-1]:

@@ -164,9 +164,7 @@ class LazyAudioDataset(data.Dataset):
             index * self._n_signal,
         )
         
-        #audio_tensor = torch.tensor(audio, dtype=torch.float32)#.to(self.device)
-        #audio_resampled = resample(audio_tensor, self._sampling_rate, 16000)
-        #target_units = self.discrete_units.units(audio_resampled.unsqueeze(0).unsqueeze(0))
+        speaker_id = ae.metadata['path'].split('/')[-2]
 
         if self._transforms is not None:
             audio = self._transforms(audio)
@@ -174,7 +172,7 @@ class LazyAudioDataset(data.Dataset):
         audio_p = self.formant_pitch(audio)
         audio_p = self.peq(audio_p)
 
-        return (audio, audio_p.astype(np.float32))
+        return (audio, audio_p.astype(np.float32), speaker_id)
 
 
 class HTTPAudioDataset(data.Dataset):

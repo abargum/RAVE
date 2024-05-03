@@ -13,11 +13,15 @@ from torchaudio.functional import resample
 import torch.nn.functional as F
 
 import wandb
+import random
 
 import rave.core
 
 from . import blocks
-
+from .my_discriminator import NewDiscriminator
+from .stft_loss import MultiResolutionSTFTLoss
+from .blocks import StackDiscriminators
+from .core import load_speaker_statedict
 
 class Profiler:
 
@@ -104,7 +108,7 @@ class CrossEntropyProjection(nn.Module):
     def __init__(self):
         super().__init__()
         self.layer_norm = torch.nn.LayerNorm(128)
-        self.proj = nn.Conv1d(128, 100, 1, bias=False)
+        self.proj = nn.Conv1d(64, 100, 1, bias=False)
         #self.softmax = torch.nn.Softmax(dim=1)
         
     def forward(self, x):
@@ -124,6 +128,7 @@ class RAVE(pl.LightningModule):
         sampling_rate,
         encoder,
         decoder,
+        speaker_encoder,
         discriminator,
         phase_1_duration,
         gan_loss,
@@ -147,7 +152,34 @@ class RAVE(pl.LightningModule):
 
         self.encoder = encoder()
         self.decoder = decoder()
-        self.discriminator = discriminator()
+
+        self.speaker_encoder = speaker_encoder()
+        self.speaker_encoder.load_state_dict(
+            self.load_speaker_statedict("/home/jupyter-arbu/RAVE/rave/pretrained/model000000081.model")
+        )
+        
+        #self.speaker_encoder.eval()
+        
+        #self.discriminator = discriminator()
+
+        #MY ADDITIONS
+        self.new_discriminator = NewDiscriminator()
+        self.discriminator = StackDiscriminators(
+            3,
+            in_size=1,
+            capacity=16,
+            multiplier=4,
+            n_layers=4,
+        )
+
+        resolutions = []
+        for hop_length_ms, win_length_ms in eval("[(5, 25), (10, 50), (2, 10)]"):
+            hop_length = int(0.001 * hop_length_ms * 44100)
+            win_length = int(0.001 * win_length_ms * 44100)
+            n_fft = int(math.pow(2, int(math.log2(win_length)) + 1))
+            resolutions.append((n_fft, hop_length, win_length))
+
+        self.stft_criterion = MultiResolutionSTFTLoss(torch.device("cuda:1"), resolutions).cuda(1)
 
         self.audio_distance = audio_distance()
         self.multiband_audio_distance = multiband_audio_distance()
@@ -195,10 +227,14 @@ class RAVE(pl.LightningModule):
         
         #gen_p = list(self.encoder.parameters())
         gen_p = list(self.decoder.parameters())
+        gen_p += list(self.speaker_encoder.parameters())
+        
         dis_p = list(self.discriminator.parameters())
+        dis_p += list(self.new_discriminator.parameters())
 
         enc_opt = torch.optim.Adam(enc_p, 1e-4, (.5, .9))
         gen_opt = torch.optim.Adam(gen_p, 1e-4, (.5, .9))
+        
         dis_opt = torch.optim.Adam(dis_p, 1e-4, (.5, .9))
 
         return enc_opt, gen_opt, dis_opt
@@ -215,16 +251,30 @@ class RAVE(pl.LightningModule):
             feature_fake.append(fake)
         return feature_real, feature_fake
 
-    def training_step(self, batch, batch_idx):
+    def load_speaker_statedict(self, path):
+        loaded_state = torch.load(path, map_location="cuda:%d" % 1)
+        newdict = {}
+        delete_list = []
+        for name, param in loaded_state.items():
+            new_name = name.replace("__S__.", "")
+            newdict[new_name] = param
+            delete_list.append(name)
+        loaded_state.update(newdict)
+        for name in delete_list:
+            del loaded_state[name]
+                
+        return loaded_state
 
-        if isinstance(self.encoder, blocks.VariationalEncoder):
-            print("VARIATIONAL ENCODER INCLUDED")
+    def training_step(self, batch, batch_idx):
 
         x_resampled = resample(batch[0], self.sr, 16000)
         target_units = torch.zeros(x_resampled.shape[0], 148)
         
         for i, sequence in enumerate(x_resampled):
             target_units[i, :] = self.discrete_units.units(sequence.unsqueeze(0).unsqueeze(0))
+
+        with torch.no_grad():
+            emb = self.speaker_encoder(batch[0]).unsqueeze(2)
 
         p = Profiler()
         enc_opt, gen_opt, dis_opt = self.optimizers()
@@ -257,8 +307,12 @@ class RAVE(pl.LightningModule):
 
         p.tick('encode')
 
+        emb = emb.repeat(1, 1, z_pre_reg.shape[-1])
+
         # DECODE LATENT
-        y_multiband = self.decoder(z_pre_reg.detach())
+        y_multiband = self.decoder(
+            torch.cat((z_pre_reg.detach(), emb), dim=1)
+        )
 
         p.tick('decode')
 
@@ -277,28 +331,34 @@ class RAVE(pl.LightningModule):
         distances = {}
 
         if self.pqmf is not None:
-            multiband_distance = self.multiband_audio_distance(
-                x_multiband, y_multiband)
-            p.tick('mb distance')
+            
+            #multiband_distance = self.multiband_audio_distance(
+            #    x_multiband, y_multiband)
+            #p.tick('mb distance')
 
             x = self.pqmf.inverse(x_multiband)
             y = self.pqmf.inverse(y_multiband)
+
+            sc_loss, mag_loss = self.stft_criterion(y.squeeze(1), x.squeeze(1))
+            distance = (sc_loss + mag_loss) * 2.5
+            distances = distance
+            
             p.tick('recompose')
 
-            for k, v in multiband_distance.items():
-                distances[f'multiband_{k}'] = v
+            #for k, v in multiband_distance.items():
+            #    distances[f'multiband_{k}'] = v
         else:
             x = x_multiband
             y = y_multiband
 
-        fullband_distance = self.audio_distance(x, y)
-        p.tick('fb distance')
+        #fullband_distance = self.audio_distance(x, y)
+        #p.tick('fb distance')
 
-        for k, v in fullband_distance.items():
-            distances[f'fullband_{k}'] = v
+        #for k, v in fullband_distance.items():
+        #    distances[f'fullband_{k}'] = v
 
         feature_matching_distance = 0.
-
+        """
         if self.warmed_up:  # DISCRIMINATION
             xy = torch.cat([x, y], 0)
             features = self.discriminator(xy)
@@ -312,7 +372,7 @@ class RAVE(pl.LightningModule):
             pred_fake = 0
 
             for scale_real, scale_fake in zip(feature_real, feature_fake):
-                """
+                
                 current_feature_distance = sum(
                     map(
                         self.feature_matching_fun,
@@ -321,7 +381,6 @@ class RAVE(pl.LightningModule):
                     )) / len(scale_real[self.num_skipped_features:])
 
                 feature_matching_distance = feature_matching_distance + current_feature_distance
-                """
                 
                 feature_matching_distance = 0
 
@@ -341,11 +400,72 @@ class RAVE(pl.LightningModule):
             pred_fake = torch.tensor(0.).to(x)
             loss_dis = torch.tensor(0.).to(x)
             loss_adv = torch.tensor(0.).to(x)
+        """
+        if self.warmed_up:  # DISCRIMINATION
+            
+            loss_dis_lvc = 0
+            loss_adv_lvc = 0
+            loss_dis_rave = 0
+            loss_adv_rave = 0
+
+            pred_true = 0
+            pred_fake = 0
+            
+            # MRD, MPD losses.
+            res_fake, period_fake = self.new_discriminator(y)
+
+            # Compute LSGAN loss for all frames.
+            for (_, score_fake) in res_fake + period_fake:
+                loss_adv_lvc += torch.mean(torch.pow(score_fake - 1.0, 2))
+
+            # Average across frames.
+            loss_adv_lvc = loss_adv_lvc / len(res_fake + period_fake)
+
+            # MRD, MPD losses.
+            res_fake, period_fake = self.new_discriminator(y.detach())  # fake audio from generator
+            res_real, period_real = self.new_discriminator(x)  # real audio
+
+            # Compute LSGAN loss for all frames.
+            for (_, score_fake), (_, score_real) in zip(
+                res_fake + period_fake, res_real + period_real
+            ):
+                loss_dis_lvc += torch.mean(torch.pow(score_real - 1.0, 2))
+                loss_dis_lvc += torch.mean(torch.pow(score_fake, 2))
+
+            # Compute average to get overall discriminator loss (L_D).
+            loss_dis_lvc = loss_dis_lvc / len(res_fake + period_fake)
+            
+            feature_true = self.discriminator(x)
+            feature_fake = self.discriminator(y)
+
+            for scale_true, scale_fake in zip(feature_true, feature_fake):
+
+                _dis = torch.relu(1 - scale_true[-1]) + torch.relu(1 + scale_fake[-1])
+                _dis = _dis.mean()
+                _adv = -scale_fake[-1].mean()
+
+                pred_true = pred_true + scale_true[-1].mean()
+                pred_fake = pred_fake + scale_fake[-1].mean()
+
+                loss_dis_rave = loss_dis_rave + _dis
+                loss_adv_rave = loss_adv_rave + _adv
+        else:
+            pred_true = torch.tensor(0.).to(x)
+            pred_fake = torch.tensor(0.).to(x)
+            loss_dis_lvc = torch.tensor(0.).to(x)
+            loss_adv_lvc = torch.tensor(0.).to(x)
+            loss_dis_rave = torch.tensor(0.).to(x)
+            loss_adv_rave = torch.tensor(0.).to(x)
+
+            
+        loss_dis = loss_dis_lvc + loss_dis_rave * 0.1
+        loss_adv = loss_adv_lvc + (loss_adv_rave) * 0.1
+        
         p.tick('discrimination')
 
         # COMPOSE GEN LOSS
         loss_gen = {}
-        loss_gen.update(distances)
+        loss_gen['audio'] = distances
         #loss_gen['unit_loss'] = ce_loss
         p.tick('update loss gen dict')
 
@@ -379,28 +499,44 @@ class RAVE(pl.LightningModule):
 
         if self.warmed_up:
             self.log("loss_dis", loss_dis)
-            self.log("pred_real", pred_real.mean())
-            self.log("pred_fake", pred_fake.mean())
+            #self.log("pred_real", pred_real.mean())
+            #self.log("pred_fake", pred_fake.mean())
             
         wandb.log({
+            "stft": distances,
             "loss_dis": loss_dis,
             "loss_gen": loss_gen,
             "dis rave": loss_dis,
             "adv rave": loss_adv,
-            "unit_loss": ce_loss
+            "unit_loss": ce_loss,
+            "dis lvc": loss_dis_lvc,
+            "dis rave": loss_dis_rave,
+            "adv lvc": loss_adv_lvc,
+            "adv rave": loss_adv_rave
         })
 
         self.log_dict(loss_gen)
         p.tick('logging')
 
     def encode(self, x):
+
+        emb = self.speaker_encoder(x.squeeze(1)).unsqueeze(2)
+        
         if self.pqmf is not None and self.enable_pqmf_encode:
             x = self.pqmf(x)
+
         z = self.encoder(x[:, :6, :])
+
+        emb = emb.repeat(1, 1, z.shape[-1])
+        #emb = torch.zeros((z.shape[0], 256, 1))
+        #emb = emb.repeat(1, 1, z.shape[-1])
+
+        z = torch.cat((z, emb), dim=1)
         #z, = self.encoder.reparametrize(self.encoder(x))[:1]
         return z
 
     def decode(self, z):
+        
         y = self.decoder(z)
         if self.pqmf is not None and self.enable_pqmf_decode:
             y = self.pqmf.inverse(y)
@@ -428,8 +564,12 @@ class RAVE(pl.LightningModule):
             
         mean = None
 
+        with torch.no_grad():
+            emb = self.speaker_encoder(batch[0]).unsqueeze(2)
+
+        emb = emb.repeat(1, 1, z.shape[-1])
         #z = self.encoder.reparametrize(z)[0]
-        y = self.decoder(z)
+        y = self.decoder(torch.cat((z.detach(), emb), dim=1))
 
         if self.pqmf is not None:
             x = self.pqmf.inverse(x_multiband)
@@ -442,10 +582,41 @@ class RAVE(pl.LightningModule):
         if self.trainer is not None:
             self.log('validation', full_distance)
 
-        return torch.cat([x, y], -1), mean
+        #CONVERSION
+        ids = batch[-1]
+        unique_elements = list(set(ids))
+        
+        if len(unique_elements) < 2:
+            inp_ind = 0
+            tar_ind = 1
+        else:
+            chosen_elements = random.sample(unique_elements, 2)
+            inp_ind, tar_ind = [ids.index(element) for element in chosen_elements]
+
+        inp = batch[0][inp_ind].unsqueeze(0).unsqueeze(0)
+        tar = batch[0][tar_ind].unsqueeze(0)
+
+        if self.pqmf is not None:
+            inp_multiband = self.pqmf(inp)
+
+        if self.enable_pqmf_encode:
+            z = self.encoder(inp_multiband[:, :6, :])
+
+        with torch.no_grad():
+            tar_emb = self.speaker_encoder(tar).unsqueeze(2)
+
+        tar_emb = tar_emb.repeat(1, 1, z.shape[-1])
+
+        y_conv = self.decoder(torch.cat((z.detach(), tar_emb), dim=1))
+
+        if self.pqmf is not None:
+            outp = self.pqmf.inverse(y_conv)
+
+        return torch.cat([x, y], -1), mean, torch.cat([inp, tar.unsqueeze(1), outp], -1)
 
     def validation_epoch_end(self, out):
-        
+
+        """
         if not self.receptive_field.sum():
             print("Computing receptive field for this configuration...")
             lrf, rrf = rave.core.get_rave_receptive_field(self)
@@ -456,11 +627,14 @@ class RAVE(pl.LightningModule):
             )
 
         if not len(out): return
+        """
 
-        audio, z = list(zip(*out))
+        audio, z, conv = list(zip(*out))
         audio = list(map(lambda x: x.cpu(), audio))
+        conv = list(map(lambda x: x.cpu(), conv))
         
         # LATENT SPACE ANALYSIS
+        """
         if not self.warmed_up and isinstance(self.encoder,
                                              blocks.VariationalEncoder):
             z = torch.cat(z, 0)
@@ -486,6 +660,7 @@ class RAVE(pl.LightningModule):
                     f"fidelity_{p}",
                     np.argmax(var > p).astype(np.float32),
                 )
+        """
 
         y = torch.cat(audio, 0)[:8].reshape(-1).numpy()
 
@@ -495,6 +670,18 @@ class RAVE(pl.LightningModule):
         wandb.log({
                 f"audio_val_{self.eval_number}":
                 wandb.Audio(y,
+                            caption="audio",
+                            sample_rate=self.sr)
+            })
+
+        conv_y = torch.cat(conv, 0)[:8].reshape(-1).numpy()
+
+        if self.integrator is not None:
+            conv_y = self.integrator(conv_y)
+            
+        wandb.log({
+                f"audio_conv_{self.eval_number}":
+                wandb.Audio(conv_y,
                             caption="audio",
                             sample_rate=self.sr)
             })

@@ -62,6 +62,9 @@ class ScriptedRAVE(nn_tilde.Module):
         self.pqmf = pretrained.pqmf
         self.encoder = pretrained.encoder
         self.decoder = pretrained.decoder
+        self.encoder2 = pretrained.encoder
+        
+        #self.speaker_encoder = pretrained.speaker_encoder
 
         self.sr = pretrained.sr
 
@@ -94,10 +97,10 @@ class ScriptedRAVE(nn_tilde.Module):
         self.register_buffer("fidelity", pretrained.fidelity)
 
         if isinstance(pretrained.encoder, rave.blocks.VariationalEncoder):
-            latent_size = max(
-                np.argmax(pretrained.fidelity.numpy() > fidelity), 1)
-            latent_size = 2**math.ceil(math.log2(latent_size))
-            self.latent_size = 64 #latent_size
+            #latent_size = max(
+            #    np.argmax(pretrained.fidelity.numpy() > fidelity), 1)
+            #latent_size = 2**math.ceil(math.log2(latent_size))
+            self.latent_size = 64 + 256 #latent_size
 
         elif isinstance(pretrained.encoder, rave.blocks.DiscreteEncoder):
             self.latent_size = 128 #pretrained.encoder.num_quantizers
@@ -200,6 +203,8 @@ class ScriptedRAVE(nn_tilde.Module):
         if self.is_using_adain:
             self.update_adain()
 
+        #emb = self.speaker_encoder(x.squeeze(1)).unsqueeze(2)
+
         if self.resampler is not None:
             x = self.resampler.to_model_sampling_rate(x)
 
@@ -207,6 +212,11 @@ class ScriptedRAVE(nn_tilde.Module):
             x = self.pqmf(x)
 
         z = self.encoder(x[: ,:6, :])
+
+        emb = torch.zeros((z.shape[0], 256, 1))
+        emb = emb.repeat(1, 1, z.shape[-1])
+
+        z = torch.cat((z, emb), dim=1)
         #z = self.post_process_latent(z)
         #print("Z after post:", z.shape)
         return z
@@ -388,6 +398,8 @@ def main(argv):
         fidelity=FLAGS.fidelity,
         target_sr=FLAGS.sr,
     )
+
+    
 
     logging.info("save model")
     model_name = os.path.basename(os.path.normpath(FLAGS.run))

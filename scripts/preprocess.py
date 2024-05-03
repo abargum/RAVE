@@ -112,7 +112,7 @@ def process_audio_array(audio: Tuple[int, bytes],
     ae = AudioExample(buffers=buffers)
     key = f'{audio_id:08d}'
     with env.begin(write=True) as txn:
-        txn.put(
+        txn. put(
             key.encode(),
             ae.SerializeToString(),
         )

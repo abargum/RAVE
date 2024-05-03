@@ -16,6 +16,29 @@ import torchaudio
 from einops import rearrange
 from scipy.signal import lfilter
 
+def load_speaker_statedict(path, gpu):
+    loaded_state = torch.load(path, map_location="cuda:%d" % gpu)
+    newdict = {}
+    delete_list = []
+    for name, param in loaded_state.items():
+        new_name = name.replace("__S__.", "")
+        newdict[new_name] = param
+        delete_list.append(name)
+    loaded_state.update(newdict)
+    for name in delete_list:
+        del loaded_state[name]
+
+    """
+    pqmf_list = []
+    for key in loaded_state:
+        if "pqmf" in key:
+            pqmf_list.append(key)
+
+    for key in pqmf_list:
+        del loaded_state[key]
+    """
+            
+    return loaded_state
 
 def mod_sigmoid(x):
     return 2 * torch.sigmoid(x)**2.3 + 1e-7
@@ -29,8 +52,8 @@ def random_angle(min_f=20, max_f=8000, sr=24000):
     return rand
 
 
-def get_augmented_latent_size(latent_size: int, noise_augmentation: int):
-    return latent_size + noise_augmentation
+def get_augmented_latent_size(latent_size: int, noise_augmentation: int, speaker_embedding_size: int):
+    return latent_size + noise_augmentation + speaker_embedding_size
 
 
 def pole_to_z_filter(omega, amplitude=.9):

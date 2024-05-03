@@ -6,6 +6,7 @@ from rave import core
 from rave import blocks
 from rave import discriminator
 from rave import dataset
+from rave import CombinedRave
 
 import cached_conv as cc
 import torch
@@ -15,7 +16,7 @@ CAPACITY = 64
 N_BAND = 16
 LATENT_SIZE = 64
 RATIOS = [4, 2, 2, 2]
-PHASE_1_DURATION = 1000
+PHASE_1_DURATION = 50000
 
 # CORE CONFIGURATION
 core.AudioDistanceV1:
@@ -30,7 +31,7 @@ core.MultiScaleSTFT:
 dataset.split_dataset.max_residual = 1000
 
 # CONVOLUTION CONFIGURATION
-cc.Conv1d.bias = False
+cc.Conv1d.bias = True
 cc.ConvTranspose1d.bias = False
 
 # PQMF
@@ -97,6 +98,7 @@ rave.RAVE:
     sampling_rate = %SAMPLING_RATE
     encoder = @blocks.VariationalEncoder  
     decoder = @blocks.Generator
+    speaker_encoder = @CombinedRave.SpeakerRAVE
     discriminator = @discriminator.MultiScaleDiscriminator
     phase_1_duration = %PHASE_1_DURATION
     gan_loss = @core.hinge_gan

@@ -10,6 +10,9 @@ from torch.nn.utils import weight_norm
 from torchaudio.transforms import Spectrogram
 
 from .core import amp_to_impulse_response, fft_convolve, mod_sigmoid
+from .pqmf import CachedPQMF as PQMF
+
+import torch.nn.utils.weight_norm as wn
 
 
 @gin.configurable
@@ -20,7 +23,6 @@ def normalization(module: nn.Module, mode: str = 'identity'):
         return weight_norm(module)
     else:
         raise Exception(f'Normalization mode {mode} not supported')
-
 
 class SampleNorm(nn.Module):
 
@@ -957,3 +959,211 @@ def angles_to_unit_norm_vector(angles: torch.Tensor) -> torch.Tensor:
 
 def wrap_around_value(x: torch.Tensor, value: float = 1) -> torch.Tensor:
     return (x + value) % (2 * value) - value
+
+
+
+
+class Discriminator(nn.Module):
+    def __init__(self, in_size, capacity, multiplier, n_layers):
+        super().__init__()
+
+        net = [
+            wn(cc.Conv1d(in_size, capacity, 15, padding=cc.get_padding(15)))
+        ]
+        net.append(nn.LeakyReLU(.2))
+
+        for i in range(n_layers):
+            net.append(
+                wn(
+                    cc.Conv1d(
+                        capacity * multiplier**i,
+                        min(1024, capacity * multiplier**(i + 1)),
+                        41,
+                        stride=multiplier,
+                        padding=cc.get_padding(41, multiplier),
+                        groups=multiplier**(i + 1),
+                    )))
+            net.append(nn.LeakyReLU(.2))
+
+        net.append(
+            wn(
+                cc.Conv1d(
+                    min(1024, capacity * multiplier**(i + 1)),
+                    min(1024, capacity * multiplier**(i + 1)),
+                    5,
+                    padding=cc.get_padding(5),
+                )))
+        net.append(nn.LeakyReLU(.2))
+        net.append(
+            wn(cc.Conv1d(min(1024, capacity * multiplier**(i + 1)), 1, 1)))
+        self.net = nn.ModuleList(net)
+
+    def forward(self, x):
+        feature = []
+        for layer in self.net:
+            x = layer(x)
+            if isinstance(layer, nn.Conv1d):
+                feature.append(x)
+        return feature
+
+
+class StackDiscriminators(nn.Module):
+    def __init__(self, n_dis, *args, **kwargs):
+        super().__init__()
+        self.discriminators = nn.ModuleList(
+            [Discriminator(*args, **kwargs) for i in range(n_dis)], )
+
+    def forward(self, x):
+        features = []
+        for layer in self.discriminators:
+            features.append(layer(x))
+            x = nn.functional.avg_pool1d(x, 2)
+        return features
+
+class SpeakerRAVE(nn.Module):
+
+    def __init__(self, activation = lambda dim: nn.LeakyReLU(.2)):
+        super().__init__()
+
+        self.pqmf = PQMF(100, 16)
+        kernel_size = 3
+
+        self.in_layer = normalization(
+                cc.Conv1d(
+                    16,
+                    128,
+                    kernel_size=kernel_size * 2 + 1,
+                    padding=cc.get_padding(kernel_size * 2 + 1),
+                ))
+
+        r = 4
+        num_channels = 128
+        out_channels = 256
+        d = 1
+
+        self.layer2 = torch.nn.Sequential(Residual(
+            DilatedUnit(dim=num_channels,
+                        kernel_size=kernel_size,
+                        dilation=d)),
+            activation(num_channels),
+            normalization(cc.Conv1d(num_channels,
+                                    out_channels,
+                                    kernel_size=2*r,
+                                    stride=r,
+                                    padding=cc.get_padding(2*r, r))))
+
+        r = 4
+        num_channels = 256
+        out_channels = 256
+        d = 3
+        
+        self.layer3 = torch.nn.Sequential(Residual(
+            DilatedUnit(dim=num_channels,
+                        kernel_size=kernel_size,
+                        dilation=d)),
+            activation(num_channels),
+            normalization(cc.Conv1d(num_channels,
+                                    out_channels,
+                                    kernel_size=2*r,
+                                    stride=r,
+                                    padding=cc.get_padding(2*r, r))))
+
+        r = 2
+        num_channels = 256
+        out_channels = 256
+        d = 5
+        
+        self.layer4 = torch.nn.Sequential(Residual(
+            DilatedUnit(dim=num_channels,
+                        kernel_size=kernel_size,
+                        dilation=d)),
+            activation(num_channels),
+            normalization(cc.Conv1d(num_channels,
+                                    out_channels,
+                                    kernel_size=2*r,
+                                    stride=r,
+                                    padding=cc.get_padding(2*r, r))))
+    
+        self.cat_layer = normalization(cc.Conv1d(out_channels,
+                                                 out_channels,
+                                                 kernel_size=1,
+                                                 padding=cc.get_padding(1)))
+
+        self.out_layer = normalization(cc.Conv1d(out_channels * 3,
+                                                 768,
+                                                 kernel_size=kernel_size,
+                                                 padding=cc.get_padding(kernel_size)))
+
+        self.activation = activation(768)
+
+        attention_projection = 768
+        attn_input = attention_projection * 3
+        attn_output = attention_projection
+
+        self.attention = nn.Sequential(
+            nn.Conv1d(attn_input, 128, kernel_size=1),
+            nn.ReLU(),
+            nn.BatchNorm1d(128),
+            cc.Conv1d(128, attn_output, kernel_size=1),
+            nn.Softmax(dim=2),
+        )
+
+        self.bn5 = nn.BatchNorm1d(attention_projection*2)
+
+        self.fc6 = nn.Linear(attention_projection*2, 256)
+        self.bn6 = nn.BatchNorm1d(256)
+
+        self.mp2 = torch.nn.MaxPool1d(2)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+
+        x = self.pqmf(x.unsqueeze(1))
+        x = self.in_layer(x)
+        x1 = self.layer2(x)
+        x2 = self.layer3(x1)
+        x3 = self.layer4(x2)
+        x4 = self.cat_layer(self.mp2(x2) + x3)
+
+        x = torch.cat((self.mp2(x2), x3, x4), dim=1)
+        
+        x = self.out_layer(x)
+        x = self.activation(x)
+
+        t = x.size()[-1]
+
+        global_x = torch.cat((x,
+                              torch.mean(x, dim=2, keepdim=True).repeat(1, 1, t),
+                              torch.sqrt(torch.var(x, dim=2, keepdim=True).clamp(min=1e-4, max=1e4)).repeat(1, 1, t)),
+                              dim=1)
+
+        w = self.attention(global_x)
+
+        mu = torch.sum(x * w, dim=2)
+        sg = torch.sqrt((torch.sum((x**2) * w, dim=2) - mu**2).clamp(min=1e-4, max=1e4))
+
+        x = torch.cat((mu, sg), 1)
+        x = self.bn5(x)
+        x = self.fc6(x)
+
+        return x
+        
+class SpeakerRAVE_TEST(nn.Module):
+
+    def __init__(self, activation = lambda dim: nn.LeakyReLU(.2)):
+        super().__init__()
+
+        net = []
+        out_channels = 128
+        #pqmf = PQMF(100, 16)
+
+        net.append(normalization(cc.Conv1d(out_channels,
+                                                 out_channels,
+                                                 kernel_size=1,
+                                                 padding=cc.get_padding(1))))
+
+        #self.fc6 = nn.Linear(2, 256)
+        self.net = cc.CachedSequential(*net)
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+
+        return x
