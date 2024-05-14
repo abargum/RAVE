@@ -7,6 +7,8 @@ logging.info("library loading")
 logging.info("DEBUG")
 import torch
 
+import librosa
+
 torch.set_grad_enabled(False)
 
 import cached_conv as cc
@@ -17,7 +19,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 from absl import flags, app
 
+import sys, os
+sys.path.append(os.path.abspath('../'))
 import rave
+import rave.model
 import rave.blocks
 import rave.core
 import rave.resampler
@@ -62,9 +67,15 @@ class ScriptedRAVE(nn_tilde.Module):
         self.pqmf = pretrained.pqmf
         self.encoder = pretrained.encoder
         self.decoder = pretrained.decoder
-        self.encoder2 = pretrained.encoder
-        
-        #self.speaker_encoder = pretrained.speaker_encoder
+
+        #self.pqmf_speaker = pretrained.pqmf_speaker
+        self.speaker_encoder = pretrained.speaker_encoder
+
+        #emb_audio, _ = librosa.load("../vctk-small/p225/p225_005_mic1.flac", sr=44100, mono=True)
+        emb_audio, _ = librosa.load("obama.wav", sr=44100, mono=True)
+        emb_audio = torch.tensor(emb_audio[:131072]).unsqueeze(0).unsqueeze(1)
+        emb_audio_pqmf = pretrained.pqmf_speaker(torch.tensor(emb_audio))
+        self.target_emb = pretrained.speaker_encoder(emb_audio_pqmf).unsqueeze(2)
 
         self.sr = pretrained.sr
 
@@ -144,6 +155,7 @@ class ScriptedRAVE(nn_tilde.Module):
                 for i in range(self.latent_size)
             ],
         )
+        
         self.register_method(
             "decode",
             in_channels=self.latent_size,
@@ -202,21 +214,19 @@ class ScriptedRAVE(nn_tilde.Module):
     def encode(self, x):
         if self.is_using_adain:
             self.update_adain()
-
-        #emb = self.speaker_encoder(x.squeeze(1)).unsqueeze(2)
-
+        
         if self.resampler is not None:
             x = self.resampler.to_model_sampling_rate(x)
 
         if self.pqmf is not None:
             x = self.pqmf(x)
 
+        dummy_emb = self.speaker_encoder(x)
+
         z = self.encoder(x[: ,:6, :])
-
-        emb = torch.zeros((z.shape[0], 256, 1))
-        emb = emb.repeat(1, 1, z.shape[-1])
-
+        emb = self.target_emb.repeat(z.shape[0], 1, z.shape[-1])
         z = torch.cat((z, emb), dim=1)
+        
         #z = self.post_process_latent(z)
         #print("Z after post:", z.shape)
         return z
@@ -350,8 +360,15 @@ def main(argv):
 
     gin.parse_config_file(os.path.join(FLAGS.run, "config.gin"))
     checkpoint = rave.core.search_for_run(FLAGS.run)
+    print("loading checkpoint:", checkpoint)
 
     pretrained = rave.RAVE()
+
+    with open("default.txt", "w") as file:
+        for param, val in pretrained.speaker_encoder.state_dict().items():
+            file.write(param + "\n")
+            file.write(str(val) + "\n")
+    
     if checkpoint is not None:
         checkpoint = torch.load(checkpoint, map_location='cpu')
         if FLAGS.ema_weights and "EMA" in checkpoint["callbacks"]:
@@ -368,8 +385,13 @@ def main(argv):
         print("No checkpoint found, RAVE will remain randomly initialized")
     pretrained.eval()
 
+    with open("pretrained.txt", "w") as file:
+        for param, val in pretrained.speaker_encoder.state_dict().items():
+            file.write(param + "\n")
+            file.write(str(val) + "\n")
+
     if isinstance(pretrained.encoder, rave.blocks.VariationalEncoder):
-        script_class = VariationalScriptedRAVE
+        script_class = ScriptedRAVE
     elif isinstance(pretrained.encoder, rave.blocks.DiscreteEncoder):
         script_class = DiscreteScriptedRAVE
     elif isinstance(pretrained.encoder, rave.blocks.WasserteinEncoder):
@@ -382,8 +404,8 @@ def main(argv):
 
     logging.info("warmup pass")
 
-    #x = torch.zeros(1, 1, 2**14)
-    #pretrained(x)
+    x = torch.zeros(1, 1, 2**14)
+    pretrained(x)
 
     logging.info("optimize model")
 
@@ -398,8 +420,6 @@ def main(argv):
         fidelity=FLAGS.fidelity,
         target_sr=FLAGS.sr,
     )
-
-    
 
     logging.info("save model")
     model_name = os.path.basename(os.path.normpath(FLAGS.run))

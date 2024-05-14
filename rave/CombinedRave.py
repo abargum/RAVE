@@ -197,13 +197,12 @@ def normalize_dilations(dilations: Union[Sequence[int],
         dilations = [dilations for _ in ratios]
     return dilations
 
-@gin.configurable
 class SpeakerRAVE(nn.Module):
 
     def __init__(self, activation = lambda dim: nn.LeakyReLU(.2)):
         super().__init__()
 
-        self.pqmf = PQMF(100, 16)
+        #self.pqmf = PQMF(100, 16)
         kernel_size = 3
 
         self.in_layer = normalization(
@@ -298,7 +297,7 @@ class SpeakerRAVE(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 
-        x = self.pqmf(x.unsqueeze(1))
+        #x = self.pqmf(x.unsqueeze(1))
         x = self.in_layer(x)
         x1 = self.layer2(x)
         x2 = self.layer3(x1)
