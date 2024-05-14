@@ -82,7 +82,7 @@ discriminator.CombineDiscriminators:
     discriminators = [
         @discriminator.MultiPeriodDiscriminator,
         @discriminator.MultiScaleDiscriminator,
-        # @discriminator.MultiScaleSpectralDiscriminator,
+        @discriminator.MultiScaleSpectralDiscriminator,
     ]
 
 feature_matching/core.mean_difference:
@@ -91,7 +91,6 @@ feature_matching/core.mean_difference:
 # RAVE
 rave.RAVE:
     speaker_encoder = @CombinedRave.SpeakerRAVE
-    pqmf_speaker = @pqmf.CachedPQMF
     discriminator = @discriminator.CombineDiscriminators
     valid_signal_crop = True
     num_skipped_features = 1
