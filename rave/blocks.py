@@ -13,7 +13,6 @@ from .core import amp_to_impulse_response, fft_convolve, mod_sigmoid
 
 import torch.nn.utils.weight_norm as wn
 
-
 @gin.configurable
 def normalization(module: nn.Module, mode: str = 'identity'):
     if mode == 'identity':
@@ -690,7 +689,11 @@ class GeneratorV2(nn.Module):
         self.amplitude_modulation = amplitude_modulation
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.net(x)
+        for layer in self.net:
+            x = layer(x)
+            print(x.shape)
+        
+        #x = self.net(x)
 
         noise = 0.
 
@@ -708,7 +711,6 @@ class GeneratorV2(nn.Module):
 
     def set_warmed_up(self, state: bool):
         pass
-
 
 class VariationalEncoder(nn.Module):
 
@@ -959,8 +961,7 @@ def angles_to_unit_norm_vector(angles: torch.Tensor) -> torch.Tensor:
 def wrap_around_value(x: torch.Tensor, value: float = 1) -> torch.Tensor:
     return (x + value) % (2 * value) - value
 
-
-
+# --------- ADDED BLOCKS --------------
 
 class Discriminator(nn.Module):
     def __init__(self, in_size, capacity, multiplier, n_layers):
@@ -1005,7 +1006,6 @@ class Discriminator(nn.Module):
                 feature.append(x)
         return feature
 
-
 class StackDiscriminators(nn.Module):
     def __init__(self, n_dis, *args, **kwargs):
         super().__init__()
@@ -1018,149 +1018,196 @@ class StackDiscriminators(nn.Module):
             features.append(layer(x))
             x = nn.functional.avg_pool1d(x, 2)
         return features
-
-class SpeakerRAVE(nn.Module):
-
-    def __init__(self, activation = lambda dim: nn.LeakyReLU(.2)):
-        super().__init__()
-
-        #self.pqmf = PQMF(100, 16)
-        kernel_size = 3
-
-        self.in_layer = normalization(
-                cc.Conv1d(
-                    16,
-                    128,
-                    kernel_size=kernel_size * 2 + 1,
-                    padding=cc.get_padding(kernel_size * 2 + 1),
-                ))
-
-        r = 4
-        num_channels = 128
-        out_channels = 256
-        d = 1
-
-        self.layer2 = torch.nn.Sequential(Residual(
-            DilatedUnit(dim=num_channels,
-                        kernel_size=kernel_size,
-                        dilation=d)),
-            activation(num_channels),
-            normalization(cc.Conv1d(num_channels,
-                                    out_channels,
-                                    kernel_size=2*r,
-                                    stride=r,
-                                    padding=cc.get_padding(2*r, r))))
-
-        r = 4
-        num_channels = 256
-        out_channels = 256
-        d = 3
-        
-        self.layer3 = torch.nn.Sequential(Residual(
-            DilatedUnit(dim=num_channels,
-                        kernel_size=kernel_size,
-                        dilation=d)),
-            activation(num_channels),
-            normalization(cc.Conv1d(num_channels,
-                                    out_channels,
-                                    kernel_size=2*r,
-                                    stride=r,
-                                    padding=cc.get_padding(2*r, r))))
-
-        r = 2
-        num_channels = 256
-        out_channels = 256
-        d = 5
-        
-        self.layer4 = torch.nn.Sequential(Residual(
-            DilatedUnit(dim=num_channels,
-                        kernel_size=kernel_size,
-                        dilation=d)),
-            activation(num_channels),
-            normalization(cc.Conv1d(num_channels,
-                                    out_channels,
-                                    kernel_size=2*r,
-                                    stride=r,
-                                    padding=cc.get_padding(2*r, r))))
-    
-        self.cat_layer = normalization(cc.Conv1d(out_channels,
-                                                 out_channels,
-                                                 kernel_size=1,
-                                                 padding=cc.get_padding(1)))
-
-        self.out_layer = normalization(cc.Conv1d(out_channels * 3,
-                                                 768,
-                                                 kernel_size=kernel_size,
-                                                 padding=cc.get_padding(kernel_size)))
-
-        self.activation = activation(768)
-
-        attention_projection = 768
-        attn_input = attention_projection * 3
-        attn_output = attention_projection
-
-        self.attention = nn.Sequential(
-            nn.Conv1d(attn_input, 128, kernel_size=1),
-            nn.ReLU(),
-            nn.BatchNorm1d(128),
-            cc.Conv1d(128, attn_output, kernel_size=1),
-            nn.Softmax(dim=2),
-        )
-
-        self.bn5 = nn.BatchNorm1d(attention_projection*2)
-
-        self.fc6 = nn.Linear(attention_projection*2, 256)
-        self.bn6 = nn.BatchNorm1d(256)
-
-        self.mp2 = torch.nn.MaxPool1d(2)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-
-        #x = self.pqmf(x)
-        x = self.in_layer(x)
-        x1 = self.layer2(x)
-        x2 = self.layer3(x1)
-        x3 = self.layer4(x2)
-        x4 = self.cat_layer(self.mp2(x2) + x3)
-
-        x = torch.cat((self.mp2(x2), x3, x4), dim=1)
-        
-        x = self.out_layer(x)
-        x = self.activation(x)
-
-        t = x.size()[-1]
-
-        global_x = torch.cat((x,
-                              torch.mean(x, dim=2, keepdim=True).repeat(1, 1, t),
-                              torch.sqrt(torch.var(x, dim=2, keepdim=True).clamp(min=1e-4, max=1e4)).repeat(1, 1, t)),
-                              dim=1)
-
-        w = self.attention(global_x)
-
-        mu = torch.sum(x * w, dim=2)
-        sg = torch.sqrt((torch.sum((x**2) * w, dim=2) - mu**2).clamp(min=1e-4, max=1e4))
-
-        x = torch.cat((mu, sg), 1)
-        x = self.bn5(x)
-        x = self.fc6(x)
-
-        return x
              
-class SpeakerRAVE_TEST(nn.Module):
-
-    def __init__(self, out_channels=128, activation = lambda dim: nn.LeakyReLU(.2)) -> None:
+class FiLM(nn.Module):
+    def __init__(
+        self,
+        cond_dim,  # dim of conditioning input
+        batch_norm=True,
+    ):
         super().__init__()
+        self.batch_norm = batch_norm
+        if batch_norm:
+            self.bn = torch.nn.BatchNorm1d(cond_dim // 2, affine=False)
 
-        out_channels = out_channels
-        #self.pqmf = pqmf
-        
-        self.pqmf = cc.Conv1d(1, out_channels, kernel_size=1, padding=cc.get_padding(1))
+    def forward(self, x, cond):
+       
+        device = x.device
+        self.bn.to(x.device)
 
-        #self.fc6 = nn.Linear(2, 256)
-    
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if len(x.shape) < 3:
-            dummy = self.pqmf(x.unsqueeze(0))
-        else:
-            dummy = self.pqmf(x)
+        g, b = torch.chunk(cond, 2, dim=1)
+
+        if self.batch_norm:
+            x = self.bn(x)  # apply BatchNorm without affine
+            
+        x = (x * g) + b  # then apply conditional affine
+
         return x
+    
+class GeneratorV2Pitch(nn.Module):
+
+    def __init__(
+        self,
+        data_size: int,
+        capacity: int,
+        ratios: Sequence[int],
+        ratios_ex: Sequence[int],
+        channels_ex: int,
+        latent_size: int,
+        kernel_size: int,
+        dilations: Sequence[int],
+        keep_dim: bool = False,
+        recurrent_layer: Optional[Callable[[], nn.Module]] = None,
+        amplitude_modulation: bool = False,
+        noise_module: Optional[NoiseGeneratorV2] = None,
+        activation: Callable[[int], nn.Module] = lambda dim: nn.LeakyReLU(.2),
+        adain: Optional[Callable[[int], nn.Module]] = None,
+    ) -> None:
+        super().__init__()
+        dilations_list = normalize_dilations(dilations, ratios)[::-1]
+        ratios = ratios[::-1]
+
+        if keep_dim:
+            num_channels = np.prod(ratios) * capacity
+        else:
+            num_channels = 2**len(ratios) * capacity
+
+        net = []
+
+        if recurrent_layer is not None:
+            net.append(recurrent_layer(latent_size))
+
+        net.append(
+            normalization(
+                cc.Conv1d(
+                    latent_size,
+                    num_channels,
+                    kernel_size=kernel_size,
+                    padding=cc.get_padding(kernel_size),
+                )), )
+
+        for r, dilations in zip(ratios, dilations_list):
+            # ADD UPSAMPLING UNIT
+            if keep_dim:
+                out_channels = num_channels // r
+            else:
+                out_channels = num_channels // 2
+            net.append(activation(num_channels))
+            net.append(
+                normalization(
+                    cc.ConvTranspose1d(num_channels,
+                                       out_channels,
+                                       2 * r,
+                                       stride=r,
+                                       padding=r // 2)))
+
+            num_channels = out_channels
+
+            # ADD RESIDUAL DILATED UNITS
+            for d in dilations:
+                if adain is not None:
+                    net.append(adain(num_channels))
+                net.append(
+                    Residual(
+                        DilatedUnit(
+                            dim=num_channels,
+                            kernel_size=kernel_size,
+                            dilation=d,
+                        )))
+
+        net.append(activation(num_channels))
+
+        waveform_module = normalization(
+            cc.Conv1d(
+                num_channels,
+                data_size * 2 if amplitude_modulation else data_size,
+                kernel_size=kernel_size * 2 + 1,
+                padding=cc.get_padding(kernel_size * 2 + 1),
+            ))
+
+        self.noise_module = None
+        self.waveform_module = None
+
+        if noise_module is not None:
+            self.waveform_module = waveform_module
+            self.noise_module = noise_module(out_channels)
+        else:
+            net.append(waveform_module)
+
+        self.net = cc.CachedSequential(*net)
+        self.amplitude_modulation = amplitude_modulation
+
+        ex_net = []
+        for r in ratios_ex:
+            # ADD DOWNSAMPLING UNIT
+            ex_net.append(
+                normalization(
+                    cc.Conv1d(
+                        channels_ex,
+                        channels_ex,
+                        kernel_size=2 * r,
+                        stride=r,
+                        padding=cc.get_padding(2 * r, r),
+                    )))
+
+        self.ex_net = cc.CachedSequential(*ex_net)
+
+        conv_net = []
+
+        for i in range(len(ratios_ex)):
+            # ADD DOWNSAMPLING UNIT
+            conv_net.append(
+                normalization(
+                    cc.Conv1d(
+                        channels_ex,
+                        2**(i+3) * channels_ex,
+                        kernel_size=1,
+                        stride=1,
+                        padding=cc.get_padding(1),
+                    )))
+            
+        self.conv_net = cc.CachedSequential(*conv_net)
+
+        film_net = []
+        film_net.append(FiLM(1024))
+        film_net.append(FiLM(512))
+        film_net.append(FiLM(256))
+        film_net.append(FiLM(128))
+        self.film_net = film_net
+
+
+    def forward(self, x: torch.Tensor, ex: torch.Tensor) -> torch.Tensor:
+
+        downsampled_layers = []
+        for down_layer, conv_layer in zip(self.ex_net, self.conv_net):
+            ex = down_layer(ex) 
+            x_conv = conv_layer(ex)
+            downsampled_layers.append(x_conv)
+
+        downsampled_layers.reverse()
+        index = 0
+        
+        for i, layer in enumerate(self.net):
+            if i % 5 != 0 or i == 0:
+                x = layer(x)
+            else:
+                x = self.film_net[index](layer(x), downsampled_layers[index])
+                index += 1
+
+        noise = 0.
+
+        if self.noise_module is not None:
+            noise = self.noise_module(x)
+            x = self.waveform_module(x)
+
+        if self.amplitude_modulation:
+            x, amplitude = x.split(x.shape[1] // 2, 1)
+            x = x * torch.sigmoid(amplitude)
+
+        x = x + noise
+        x = torch.tanh(x)
+
+        return x
+
+    def set_warmed_up(self, state: bool):
+        pass

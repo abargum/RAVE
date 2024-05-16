@@ -71,8 +71,8 @@ class ScriptedRAVE(nn_tilde.Module):
         #self.pqmf_speaker = pretrained.pqmf_speaker
         self.speaker_encoder = pretrained.speaker_encoder
 
-        #emb_audio, _ = librosa.load("../vctk-small/p225/p225_005_mic1.flac", sr=44100, mono=True)
-        emb_audio, _ = librosa.load("obama.wav", sr=44100, mono=True)
+        emb_audio, _ = librosa.load("../vctk-small/p225/p225_005_mic1.flac", sr=44100, mono=True)
+        #emb_audio, _ = librosa.load("../libri.wav", sr=44100, mono=True)
         emb_audio = torch.tensor(emb_audio[:131072]).unsqueeze(0).unsqueeze(1)
         emb_audio_pqmf = pretrained.pqmf_speaker(torch.tensor(emb_audio))
         self.target_emb = pretrained.speaker_encoder(emb_audio_pqmf).unsqueeze(2)
@@ -155,6 +155,32 @@ class ScriptedRAVE(nn_tilde.Module):
                 for i in range(self.latent_size)
             ],
         )
+
+        self.register_method(
+            "my_forward",
+            in_channels=1,
+            in_ratio=1,
+            out_channels=1,
+            out_ratio=1,
+            input_labels=['(signal) Input audio signal'],
+            output_labels=[
+                f'(signal) Latent dimension {i}'
+                for i in range(1)
+            ],
+        )
+
+        self.register_method(
+            "embed",
+            in_channels=1,
+            in_ratio=1,
+            out_channels=256,
+            out_ratio=ratio_encode,
+            input_labels=['(signal) Input audio signal'],
+            output_labels=[
+                f'(signal) Latent dimension {i}'
+                for i in range(256)
+            ],
+        )
         
         self.register_method(
             "decode",
@@ -230,6 +256,54 @@ class ScriptedRAVE(nn_tilde.Module):
         #z = self.post_process_latent(z)
         #print("Z after post:", z.shape)
         return z
+
+    @torch.jit.export
+    def my_forward(self, x):
+        if self.is_using_adain:
+            self.update_adain()
+        
+        if self.resampler is not None:
+            x = self.resampler.to_model_sampling_rate(x)
+
+        if self.pqmf is not None:
+            x = self.pqmf(x)
+
+        dummy_emb = self.speaker_encoder(x)
+
+        z = self.encoder(x[: ,:6, :])
+        emb = self.target_emb.repeat(z.shape[0], 1, z.shape[-1])
+        z = torch.cat((z, emb), dim=1)
+        
+        y = self.decoder(z)
+
+        if self.pqmf is not None:
+            y = self.pqmf.inverse(y)
+
+        if self.resampler is not None:
+            y = self.resampler.from_model_sampling_rate(y)
+
+        if self.stereo:
+            y = torch.cat(y.chunk(2, 0), 1)
+            
+        return y
+
+    @torch.jit.export
+    def embed(self, x):
+    
+        if self.resampler is not None:
+            x = self.resampler.to_model_sampling_rate(x)
+
+        if self.pqmf is not None:
+            x = self.pqmf(x)
+
+        dummy_emb = self.speaker_encoder(x).unsqueeze(2)
+
+        z = self.encoder(x[: ,:6, :])
+        emb = dummy_emb.repeat(1, 1, z.shape[-1])
+        
+        #z = self.post_process_latent(z)
+        #print("Z after post:", z.shape)
+        return emb
 
     @torch.jit.export
     def decode(self, z, from_forward: bool = False):
