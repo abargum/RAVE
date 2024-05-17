@@ -23,7 +23,7 @@ from .stft_loss import MultiResolutionSTFTLoss
 from .blocks import StackDiscriminators
 from .core import load_speaker_statedict
 
-from .excitation import ExcitationModule, get_pitch, get_rms_val, upsample
+from .excitation import ExcitationModule
 
 class Profiler:
 
@@ -291,12 +291,13 @@ class RAVE(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
 
-        #PITCH
-        pitch = get_pitch(batch[0], 1024).unsqueeze(-1)
-        pitch = upsample(pitch, 1024)
-        ex, phase = self.excitation_module(pitch)
-        rms_val = get_rms_val(batch[0], ex, 1024, 0.1)
-        ex = (ex * rms_val).unsqueeze(1)
+        #pitch = get_pitch(batch[0], 1024).unsqueeze(-1)
+        #pitch = upsample(pitch, 1024)
+        #ex, phase = self.excitation_module(pitch)
+        #rms_val = get_rms_val(batch[0], ex, 1024, 0.1)
+        #ex = (ex * rms_val).unsqueeze(1)
+        ex = self.excitation_module(batch[0],
+                                    torch.ones((batch[0].shape[0], batch[0].shape[1]))).unsqueeze(1)
 
         x_resampled = resample(batch[0], self.sr, 16000)
         target_units = torch.zeros(x_resampled.shape[0], 148)
@@ -590,27 +591,39 @@ class RAVE(pl.LightningModule):
 
         emb = self.speaker_encoder(x).unsqueeze(-1)
         emb = emb.repeat(z.shape[0], 1, z.shape[-1])
+        
         z = torch.cat((z, emb), dim=1)
         #z, = self.encoder.reparametrize(self.encoder(x))[:1]
         return z
 
-    def decode(self, z):
+    def decode(self, z, x):
+
+        #pitch = get_pitch(x.squeeze(1), 1024).unsqueeze(-1)
+        #pitch = upsample(pitch, 1024)
+        #ex, phase = self.excitation_module(pitch)
+        #rms_val = get_rms_val(x.squeeze(1), ex, 1024, 0.1)
+        #ex = (ex * rms_val).unsqueeze(1)
+        ex = self.excitation_module(x.squeeze(1), torch.ones(1)).unsqueeze(1)
+
+        ex_multiband = self.pqmf(ex)
         
-        y = self.decoder(z)
+        y = self.decoder(z, ex_multiband)
         if self.pqmf is not None and self.enable_pqmf_decode:
             y = self.pqmf.inverse(y)
         return y
 
     def forward(self, x):
-        return self.decode(self.encode(x))
+        return self.decode(self.encode(x), x)
 
     def validation_step(self, batch, batch_idx):
 
-        pitch = get_pitch(batch[0], 1024).unsqueeze(-1)
-        pitch = upsample(pitch, 1024)
-        ex, phase = self.excitation_module(pitch)
-        rms_val = get_rms_val(batch[0], ex, 1024, 0.1)
-        ex = (ex * rms_val).unsqueeze(1)
+        #pitch = get_pitch(batch[0], 1024).unsqueeze(-1)
+        #pitch = upsample(pitch, 1024)
+        #ex, phase = self.excitation_module(pitch)
+        #rms_val = get_rms_val(batch[0], ex, 1024, 0.1)
+        #ex = (ex * rms_val).unsqueeze(1)
+        ex = self.excitation_module(batch[0],
+                                    torch.ones((batch[0].shape[0], batch[0].shape[1]))).unsqueeze(1)
         
         x = batch[0].unsqueeze(1)
 
@@ -663,11 +676,13 @@ class RAVE(pl.LightningModule):
             inp_ind, tar_ind = [ids.index(element) for element in chosen_elements]
 
         inp = batch[0][inp_ind].unsqueeze(0)
-        pitch = get_pitch(inp, 1024).unsqueeze(-1)
-        pitch = upsample(pitch, 1024)
-        ex, phase = self.excitation_module(pitch)
-        rms_val = get_rms_val(inp, ex, 1024, 0.1)
-        ex = (ex * rms_val).unsqueeze(1)
+        #pitch = get_pitch(inp, 1024).unsqueeze(-1)
+        #pitch = upsample(pitch, 1024)
+        #ex, phase = self.excitation_module(pitch)
+        #rms_val = get_rms_val(inp, ex, 1024, 0.1)
+        #ex = (ex * rms_val).unsqueeze(1)
+        ex = self.excitation_module(inp,
+                                    torch.ones((inp.shape[0], inp.shape[1]))).unsqueeze(1)
         
         tar = batch[0][tar_ind].unsqueeze(0).unsqueeze(0)
 

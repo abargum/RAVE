@@ -1028,12 +1028,9 @@ class FiLM(nn.Module):
         super().__init__()
         self.batch_norm = batch_norm
         if batch_norm:
-            self.bn = torch.nn.BatchNorm1d(cond_dim // 2, affine=False)
+            self.bn = nn.BatchNorm1d(cond_dim // 2, affine=False)
 
-    def forward(self, x, cond):
-       
-        device = x.device
-        self.bn.to(x.device)
+    def forward(self, x: torch.Tensor, cond: torch.Tensor) -> torch.Tensor:
 
         g, b = torch.chunk(cond, 2, dim=1)
 
@@ -1137,6 +1134,64 @@ class GeneratorV2Pitch(nn.Module):
         self.net = cc.CachedSequential(*net)
         self.amplitude_modulation = amplitude_modulation
 
+        self.ex_down1 = normalization(cc.Conv1d(
+                        16,
+                        16,
+                        kernel_size=2 * 1,
+                        stride=1,
+                        padding=cc.get_padding(2 * 1, 1),
+                    ))
+        
+        self.ex_down2 = normalization(cc.Conv1d(
+                        16,
+                        16,
+                        kernel_size=2 * 4,
+                        stride=4,
+                        padding=cc.get_padding(2 * 4, 4),
+                    ))
+
+        self.ex_down3 = normalization(cc.Conv1d(
+                        16,
+                        16,
+                        kernel_size=2 * 4,
+                        stride=4,
+                        padding=cc.get_padding(2 * 4, 4),
+                    ))
+
+        self.ex_down4 = normalization(cc.Conv1d(
+                        16,
+                        16,
+                        kernel_size=2 * 2,
+                        stride=2,
+                        padding=cc.get_padding(2 * 2, 2),
+                    ))
+
+        
+        self.c_conv1 = normalization(cc.Conv1d(16,
+                                               128,
+                                               kernel_size=1,
+                                               stride=1,
+                                               padding=cc.get_padding(1)))
+        
+        self.c_conv2 = normalization(cc.Conv1d(16,
+                                               256,
+                                               kernel_size=1,
+                                               stride=1,
+                                               padding=cc.get_padding(1)))
+
+        self.c_conv3 = normalization(cc.Conv1d(16,
+                                               512,
+                                               kernel_size=1,
+                                               stride=1,
+                                               padding=cc.get_padding(1)))
+
+        self.c_conv4 = normalization(cc.Conv1d(16,
+                                               1024,
+                                               kernel_size=1,
+                                               stride=1,
+                                               padding=cc.get_padding(1)))
+        """
+        
         ex_net = []
         for r in ratios_ex:
             # ADD DOWNSAMPLING UNIT
@@ -1151,7 +1206,6 @@ class GeneratorV2Pitch(nn.Module):
                     )))
 
         self.ex_net = cc.CachedSequential(*ex_net)
-
         conv_net = []
 
         for i in range(len(ratios_ex)):
@@ -1167,17 +1221,20 @@ class GeneratorV2Pitch(nn.Module):
                     )))
             
         self.conv_net = cc.CachedSequential(*conv_net)
+        """
 
-        film_net = []
-        film_net.append(FiLM(1024))
-        film_net.append(FiLM(512))
-        film_net.append(FiLM(256))
-        film_net.append(FiLM(128))
-        self.film_net = film_net
-
+        self.film1 = FiLM(1024)
+        self.film2 = FiLM(512)
+        self.film3 = FiLM(256)
+        self.film4 = FiLM(128)
+        
+        """
+        film_list = [1024, 512, 256, 128]
+        self.film_net = nn.ModuleList([FiLM(i) for i in film_list])
+        """
 
     def forward(self, x: torch.Tensor, ex: torch.Tensor) -> torch.Tensor:
-
+        """
         downsampled_layers = []
         for down_layer, conv_layer in zip(self.ex_net, self.conv_net):
             ex = down_layer(ex) 
@@ -1185,13 +1242,36 @@ class GeneratorV2Pitch(nn.Module):
             downsampled_layers.append(x_conv)
 
         downsampled_layers.reverse()
+        """
+
+        ex_down1 = self.ex_down1(ex)
+        ex_conv1 = self.c_conv1(ex_down1)
+
+        ex_down2 = self.ex_down2(ex_down1)
+        ex_conv2 = self.c_conv2(ex_down2)
+        
+        ex_down3 = self.ex_down3(ex_down2)
+        ex_conv3 = self.c_conv3(ex_down3)
+
+        ex_down4 = self.ex_down4(ex_down3)
+        ex_conv4 = self.c_conv4(ex_down4)
+        
         index = 0
         
         for i, layer in enumerate(self.net):
             if i % 5 != 0 or i == 0:
                 x = layer(x)
-            else:
-                x = self.film_net[index](layer(x), downsampled_layers[index])
+            elif i == 5:
+                x = self.film1(layer(x), ex_conv4)
+                index += 1
+            elif i == 10:
+                x = self.film2(layer(x), ex_conv3)
+                index += 1
+            elif i == 15:
+                x = self.film3(layer(x), ex_conv2)
+                index += 1
+            elif i == 20:
+                x = self.film4(layer(x), ex_conv1)
                 index += 1
 
         noise = 0.

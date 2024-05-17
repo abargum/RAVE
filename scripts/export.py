@@ -70,6 +70,7 @@ class ScriptedRAVE(nn_tilde.Module):
 
         #self.pqmf_speaker = pretrained.pqmf_speaker
         self.speaker_encoder = pretrained.speaker_encoder
+        self.excitation_module = pretrained.excitation_module
 
         emb_audio, _ = librosa.load("../vctk-small/p225/p225_005_mic1.flac", sr=44100, mono=True)
         #emb_audio, _ = librosa.load("../libri.wav", sr=44100, mono=True)
@@ -142,7 +143,7 @@ class ScriptedRAVE(nn_tilde.Module):
         channels = ["(L)", "(R)"] if stereo else ["(mono)"]
 
         self.fake_adain = rave.blocks.AdaptiveInstanceNormalization(0)
-
+        """
         self.register_method(
             "encode",
             in_channels=1,
@@ -155,20 +156,7 @@ class ScriptedRAVE(nn_tilde.Module):
                 for i in range(self.latent_size)
             ],
         )
-
-        self.register_method(
-            "my_forward",
-            in_channels=1,
-            in_ratio=1,
-            out_channels=1,
-            out_ratio=1,
-            input_labels=['(signal) Input audio signal'],
-            output_labels=[
-                f'(signal) Latent dimension {i}'
-                for i in range(1)
-            ],
-        )
-
+        
         self.register_method(
             "embed",
             in_channels=1,
@@ -197,7 +185,22 @@ class ScriptedRAVE(nn_tilde.Module):
                 for channel in channels
             ],
         )
+        """
 
+        self.register_method(
+            "pitch",
+            in_channels=2,
+            in_ratio=1,
+            out_channels=2 if stereo else 1,
+            out_ratio=1,
+            input_labels=['(signal) Input audio signal', '(signal) Input audio signal'],
+            output_labels=[
+                f'(signal) Reconstructed audio signal {channel}'
+                for channel in channels
+            ],
+        )
+
+        """
         self.register_method(
             "forward",
             in_channels=1,
@@ -210,6 +213,21 @@ class ScriptedRAVE(nn_tilde.Module):
                 for channel in channels
             ],
         )
+
+        self.register_method(
+                "pitch",
+                in_channels=1,
+                in_ratio=1,
+                out_channels=2 if stereo else 1,
+                out_ratio=1,
+                input_labels=['(signal) Input audio signal'],
+                output_labels=[
+                    f'(signal) Reconstructed audio signal {channel}'
+                    for channel in channels
+                ],
+            )
+        """
+        
 
     def post_process_latent(self, z):
         raise NotImplementedError
@@ -235,7 +253,7 @@ class ScriptedRAVE(nn_tilde.Module):
 
         self.reset_source = False,
         self.reset_target = False,
-
+    """
     @torch.jit.export
     def encode(self, x):
         if self.is_using_adain:
@@ -257,24 +275,45 @@ class ScriptedRAVE(nn_tilde.Module):
         #print("Z after post:", z.shape)
         return z
 
+    """
+
     @torch.jit.export
-    def my_forward(self, x):
+    def pitch(self, x):
+
         if self.is_using_adain:
             self.update_adain()
         
         if self.resampler is not None:
             x = self.resampler.to_model_sampling_rate(x)
 
+        ex = self.excitation_module(x[:, 0, :], x[:, 1, :])
+            
+        return ex.unsqueeze(1)
+    """
+    @torch.jit.export
+    def forward(self, x):
+        
+        if self.is_using_adain:
+            self.update_adain()
+        
+        if self.resampler is not None:
+            x = self.resampler.to_model_sampling_rate(x)
+
+        ex = self.excitation_module(x.squeeze(1)).unsqueeze(1)
+
         if self.pqmf is not None:
             x = self.pqmf(x)
+            ex_multiband = self.pqmf(ex)
 
         dummy_emb = self.speaker_encoder(x)
 
         z = self.encoder(x[: ,:6, :])
         emb = self.target_emb.repeat(z.shape[0], 1, z.shape[-1])
         z = torch.cat((z, emb), dim=1)
+
+        #ex_multiband = torch.rand(x.shape)
         
-        y = self.decoder(z)
+        y = self.decoder(z, ex_multiband)
 
         if self.pqmf is not None:
             y = self.pqmf.inverse(y)
@@ -286,10 +325,10 @@ class ScriptedRAVE(nn_tilde.Module):
             y = torch.cat(y.chunk(2, 0), 1)
             
         return y
-
+    
     @torch.jit.export
     def embed(self, x):
-    
+
         if self.resampler is not None:
             x = self.resampler.to_model_sampling_rate(x)
 
@@ -314,7 +353,8 @@ class ScriptedRAVE(nn_tilde.Module):
             z = torch.cat([z, z], 0)
 
         #z = self.pre_process_latent(z)
-        y = self.decoder(z)
+        dummy_pitch = torch.rand((z.shape[0], 16, 512))
+        y = self.decoder(z, dummy_pitch)
 
         if self.pqmf is not None:
             y = self.pqmf.inverse(y)
@@ -326,9 +366,10 @@ class ScriptedRAVE(nn_tilde.Module):
             y = torch.cat(y.chunk(2, 0), 1)
 
         return y
-
+    
     def forward(self, x):
         return self.decode(self.encode(x), from_forward=True)
+    """
 
     @torch.jit.export
     def get_learn_target(self) -> bool:
