@@ -104,7 +104,8 @@ class ExcitationModule(torch.nn.Module):
             initial_phase = torch.zeros(pitch.shape[0], 1, 1).to(pitch)
         
         noise_mask = (pitch == 0).detach().float()
-        noise_mask *= torch.randn(noise_mask.shape).to(pitch)
+        noise_mask *= torch.randn(noise_mask.shape).to(noise_mask)
+        #noise_mask *= (100 * torch.normal(mean=0.0, std=0.003 ** 2.0, size=noise_mask.shape)).to(pitch)
         f0 = pitch.detach()
 
         # harmonic synth
@@ -121,8 +122,8 @@ class ExcitationModule(torch.nn.Module):
         
         # signal
         signal = (torch.sin(phases) * amp).sum(-1, keepdim=True)
-        signal += (noise_mask * 0.25)
-        signal = signal.squeeze(-1) / torch.max(signal)
+        signal += noise_mask
+        signal = signal.squeeze(-1) #/ torch.max(signal)
 
         rms_val = self.get_rms_val(audio, signal, self.encoding_ratio, self.rms_thresh)
         ex = (signal * rms_val)

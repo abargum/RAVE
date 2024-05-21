@@ -190,7 +190,7 @@ class RAVE(pl.LightningModule):
             n_fft = int(math.pow(2, int(math.log2(win_length)) + 1))
             resolutions.append((n_fft, hop_length, win_length))
 
-        self.stft_criterion = MultiResolutionSTFTLoss(torch.device("cuda:0"), resolutions)
+        self.stft_criterion = MultiResolutionSTFTLoss(torch.device("cuda:1"), resolutions).cuda(1)
         
         # ............... #
 
@@ -280,7 +280,8 @@ class RAVE(pl.LightningModule):
                 new_name = new_name.replace("pqmf.", "")
                 pqmfdict[new_name] = param
             else:
-                newdict[new_name] = param    
+                newdict[new_name] = param
+                
             delete_list.append(name)
         loaded_state.update(newdict)
         for name in delete_list:

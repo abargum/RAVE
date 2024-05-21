@@ -47,7 +47,7 @@ flags.DEFINE_integer('val_every', 10000, help='Checkpoint model every n steps')
 flags.DEFINE_integer('n_signal',
                      131072,
                      help='Number of audio samples to use during training')
-flags.DEFINE_integer('batch', 2, help='Batch size')
+flags.DEFINE_integer('batch', 8, help='Batch size')
 flags.DEFINE_string('ckpt',
                     None,
                     help='Path to previous checkpoint of the run')
