@@ -152,7 +152,7 @@ class RAVE(pl.LightningModule):
         self.pqmf = None
         if pqmf is not None:
             self.pqmf = pqmf()
-            self.pqmf_speaker = pqmf()
+            #self.pqmf_speaker = pqmf()
 
         self.encoder = encoder()
         self.decoder = decoder()
@@ -166,7 +166,7 @@ class RAVE(pl.LightningModule):
         if enable_training:
             self.speaker_encoder.load_state_dict(spk_state)
             
-        self.pqmf_speaker.load_state_dict(pqmf_state)
+        #self.pqmf_speaker.load_state_dict(pqmf_state)
 
         # .... RAVE LOSS .... #
         #self.discriminator = discriminator()
@@ -190,7 +190,7 @@ class RAVE(pl.LightningModule):
             n_fft = int(math.pow(2, int(math.log2(win_length)) + 1))
             resolutions.append((n_fft, hop_length, win_length))
 
-        self.stft_criterion = MultiResolutionSTFTLoss(torch.device("cuda:1"), resolutions).cuda(1)
+        self.stft_criterion = MultiResolutionSTFTLoss(torch.device("cuda:0"), resolutions)
         
         # ............... #
 
@@ -245,7 +245,7 @@ class RAVE(pl.LightningModule):
         gen_p += list(self.speaker_encoder.parameters())
         
         dis_p = list(self.discriminator.parameters())
-        #dis_p += list(self.new_discriminator.parameters())
+        dis_p += list(self.new_discriminator.parameters())
 
         enc_opt = torch.optim.Adam(enc_p, 1e-4, (.5, .9))
         gen_opt = torch.optim.Adam(gen_p, 1e-4, (.5, .9))
@@ -280,8 +280,7 @@ class RAVE(pl.LightningModule):
                 new_name = new_name.replace("pqmf.", "")
                 pqmfdict[new_name] = param
             else:
-                newdict[new_name] = param
-                
+                newdict[new_name] = param    
             delete_list.append(name)
         loaded_state.update(newdict)
         for name in delete_list:
@@ -365,41 +364,42 @@ class RAVE(pl.LightningModule):
         if self.pqmf is not None:
 
             # .... RAVE LOSS .... #
-            multiband_distance = self.multiband_audio_distance(
-                x_multiband, y_multiband)
-            p.tick('mb distance')
+            #multiband_distance = self.multiband_audio_distance(
+            #    x_multiband, y_multiband)
+            #p.tick('mb distance')
             # ................... #
 
             x = self.pqmf.inverse(x_multiband)
             y = self.pqmf.inverse(y_multiband)
 
             # .... MY LOSS .... #
-            #sc_loss, mag_loss = self.stft_criterion(y.squeeze(1), x.squeeze(1))
-            #distance = (sc_loss + mag_loss) * 2.5
-            #distances = distance
+            sc_loss, mag_loss = self.stft_criterion(y.squeeze(1), x.squeeze(1))
+            distance = (sc_loss + mag_loss) * 2.5
+            distances = distance
             # ................. #
             
             p.tick('recompose')
 
             # .... RAVE LOSS .... #
-            for k, v in multiband_distance.items():
-                distances[f'multiband_{k}'] = v
+            #for k, v in multiband_distance.items():
+            #    distances[f'multiband_{k}'] = v
             # ................... #
         else:
             x = x_multiband
             y = y_multiband
 
         # .... RAVE LOSS .... #
-        fullband_distance = self.audio_distance(x, y)
-        p.tick('fb distance')
+        #fullband_distance = self.audio_distance(x, y)
+        #p.tick('fb distance')
 
-        for k, v in fullband_distance.items():
-            distances[f'fullband_{k}'] = v
+        #for k, v in fullband_distance.items():
+        #    distances[f'fullband_{k}'] = v
         # ................... #
 
         feature_matching_distance = 0.
         
         # .... RAVE LOSS .... #
+        """
         if self.warmed_up:  # DISCRIMINATION
             xy = torch.cat([x, y], 0)
             features = self.discriminator(xy)
@@ -414,7 +414,6 @@ class RAVE(pl.LightningModule):
 
             for scale_real, scale_fake in zip(feature_real, feature_fake):
 
-                """
                 current_feature_distance = sum(
                     map(
                         self.feature_matching_fun,
@@ -425,7 +424,6 @@ class RAVE(pl.LightningModule):
                 feature_matching_distance = feature_matching_distance + current_feature_distance
                 
                 feature_matching_distance = 0
-                """
 
                 _dis, _adv = self.gan_loss(scale_real[-1], scale_fake[-1])
 
@@ -443,10 +441,9 @@ class RAVE(pl.LightningModule):
             pred_fake = torch.tensor(0.).to(x)
             loss_dis = torch.tensor(0.).to(x)
             loss_adv = torch.tensor(0.).to(x)
-        
+        """
         # ................... #
         # .... MY LOSS .... #
-        """
         if self.warmed_up:  # DISCRIMINATION
             
             loss_dis_lvc = 0
@@ -506,7 +503,6 @@ class RAVE(pl.LightningModule):
             
         loss_dis = loss_dis_lvc + loss_dis_rave * 0.1
         loss_adv = loss_adv_lvc + (loss_adv_rave) * 0.1
-        """
         # ................. #
         
         p.tick('discrimination')
@@ -515,10 +511,10 @@ class RAVE(pl.LightningModule):
         loss_gen = {}
 
          # .... RAVE LOSS .... #
-        loss_gen.update(distances)
+        #loss_gen.update(distances)
         
          # .... MY LOSS .... #
-        #loss_gen['audio'] = distances
+        loss_gen['audio'] = distances
         
         p.tick('update loss gen dict')
 
@@ -556,7 +552,6 @@ class RAVE(pl.LightningModule):
             #self.log("pred_fake", pred_fake.mean())
 
         # .... MY LOSS .... #
-        """
         wandb.log({
             "stft": distances,
             "loss_dis": loss_dis,
@@ -569,14 +564,13 @@ class RAVE(pl.LightningModule):
             "adv lvc": loss_adv_lvc,
             "adv rave": loss_adv_rave
         })
-        """
         # ................. #
         # .... RAVE LOSS .... #
-        wandb.log({
-            "loss_dis": loss_dis,
-            "loss_gen": loss_gen,
-            "unit_loss": ce_loss
-        })
+        #wandb.log({
+        #    "loss_dis": loss_dis,
+        #    "loss_gen": loss_gen,
+        #    "unit_loss": ce_loss
+        #})
         # ................... #
 
         self.log_dict(loss_gen)
