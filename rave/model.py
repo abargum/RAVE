@@ -154,22 +154,24 @@ class RAVE(pl.LightningModule):
         self.encoder = encoder()
         self.decoder = decoder()
 
-        #self.pqmf_speaker = pqmf()
+        self.pqmf_speaker = pqmf()
         self.speaker_encoder = speaker_encoder()
         spk_state, pqmf_state = self.load_speaker_statedict("/home/jupyter-arbu/RAVE/rave/pretrained/model000000081.model")
 
         #ONLY LOAD PRETRAINED SPK_EMB WHEN TRAINING
         if enable_training:
+            print("loaded pretrained speaker embedding")
             self.speaker_encoder.load_state_dict(spk_state)
-            
-        self.pqmf.load_state_dict(pqmf_state)
+            self.pqmf_speaker.load_state_dict(pqmf_state)
+        else:
+            print("loaded my speaker embedding")
 
         # .... RAVE LOSS .... #
-        self.discriminator = discriminator()
+        #self.discriminator = discriminator()
         # ................... #
 
         # .... MY LOSS .... #
-        """
+        
         self.new_discriminator = NewDiscriminator()
         self.discriminator = StackDiscriminators(
             3,
@@ -187,7 +189,7 @@ class RAVE(pl.LightningModule):
             resolutions.append((n_fft, hop_length, win_length))
 
         self.stft_criterion = MultiResolutionSTFTLoss(torch.device("cuda:1"), resolutions).cuda(1)
-        """
+
         # ............... #
 
         self.audio_distance = audio_distance()
@@ -239,7 +241,7 @@ class RAVE(pl.LightningModule):
         gen_p += list(self.speaker_encoder.parameters())
         
         dis_p = list(self.discriminator.parameters())
-        #dis_p += list(self.new_discriminator.parameters())
+        dis_p += list(self.new_discriminator.parameters())
 
         enc_opt = torch.optim.Adam(enc_p, 1e-4, (.5, .9))
         gen_opt = torch.optim.Adam(gen_p, 1e-4, (.5, .9))
@@ -586,6 +588,8 @@ class RAVE(pl.LightningModule):
         return y
 
     def forward(self, x):
+        dummy = self.pqmf_speaker(x)
+        dummy = self.pqmf_speaker.inverse(dummy)
         return self.decode(self.encode(x))
 
     def validation_step(self, batch, batch_idx):
