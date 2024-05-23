@@ -165,6 +165,9 @@ class RAVE(pl.LightningModule):
         #(REMEMBER TO RESET THIS MANUALLY IN CONFIG WHEN EXPORTING)
         if enable_training:
             self.speaker_encoder.load_state_dict(spk_state)
+            print("Loaded pretrained speaker encoder")
+        else:
+            print("Loaded my-trained speaker encoder")
             
         #self.pqmf_speaker.load_state_dict(pqmf_state)
 
@@ -296,6 +299,7 @@ class RAVE(pl.LightningModule):
         #ex, phase = self.excitation_module(pitch)
         #rms_val = get_rms_val(batch[0], ex, 1024, 0.1)
         #ex = (ex * rms_val).unsqueeze(1)
+        
         ex = self.excitation_module(batch[0],
                                     torch.ones((batch[0].shape[0], batch[0].shape[1]))).unsqueeze(1)
 

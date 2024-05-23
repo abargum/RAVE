@@ -68,7 +68,7 @@ class ScriptedRAVE(nn_tilde.Module):
         self.encoder = pretrained.encoder
         self.decoder = pretrained.decoder
 
-        #self.pqmf_speaker = pretrained.pqmf_speaker
+        #pqmf_speaker = pretrained.pqmf_speaker
         self.speaker_encoder = pretrained.speaker_encoder
         self.excitation_module = pretrained.excitation_module
 
@@ -77,8 +77,10 @@ class ScriptedRAVE(nn_tilde.Module):
         emb_audio = torch.tensor(emb_audio[:131072]).unsqueeze(0).unsqueeze(1)
         emb_audio_pqmf = self.pqmf(torch.tensor(emb_audio))
         self.target_emb = pretrained.speaker_encoder(emb_audio_pqmf).unsqueeze(2)
-
+    
         self.sr = pretrained.sr
+        self.tar = emb_audio.squeeze(0)
+        print(self.tar.shape)
 
         self.resampler = None
 
@@ -203,7 +205,7 @@ class ScriptedRAVE(nn_tilde.Module):
             "forward",
             in_channels=2,
             in_ratio=1,
-            out_channels=2 if stereo else 1,
+            out_channels=1,
             out_ratio=1,
             input_labels=['(signal) Input audio signal', '(signal) Input audio signal'],
             output_labels=[
@@ -211,7 +213,6 @@ class ScriptedRAVE(nn_tilde.Module):
                 for channel in channels
             ],
         )
-        
 
     def post_process_latent(self, z):
         raise NotImplementedError
@@ -301,12 +302,15 @@ class ScriptedRAVE(nn_tilde.Module):
 
         if self.pqmf is not None:
             y = self.pqmf.inverse(y)
+            #ex = self.pqmf.inverse(ex_multiband)
 
         if self.resampler is not None:
             y = self.resampler.from_model_sampling_rate(y)
 
         if self.stereo:
             y = torch.cat(y.chunk(2, 0), 1)
+
+        #out = torch.cat((y, ex), dim=1)
             
         return y
         
