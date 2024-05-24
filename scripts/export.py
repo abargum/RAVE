@@ -91,6 +91,8 @@ class ScriptedRAVE(nn_tilde.Module):
         self.speaker3 = self.speaker_encoder(emb_audio_pqmf3).unsqueeze(2)
         self.speaker4 = self.speaker_encoder(emb_audio_pqmf4).unsqueeze(2)
 
+        #self.register_attribute("speaker5", torch.zeros(self.speaker4.shape))
+        self.speaker5 = torch.ones(self.speaker4.shape)
         self.target_emb = self.speaker1
 
         self.sr = pretrained.sr
@@ -120,10 +122,15 @@ class ScriptedRAVE(nn_tilde.Module):
         self.register_attribute("reset_source", False)
         
         self.register_attribute("speaker", 0)
+        self.register_attribute("record", False)
 
         self.register_buffer("latent_pca", pretrained.latent_pca)
         self.register_buffer("latent_mean", pretrained.latent_mean)
         self.register_buffer("fidelity", pretrained.fidelity)
+
+        self.target_buffer_size = 131072
+        self.register_buffer("buffer", torch.zeros(self.target_buffer_size))
+        self.current_position = 0
 
         if isinstance(pretrained.encoder, rave.blocks.VariationalEncoder):
             #latent_size = max(
@@ -160,6 +167,21 @@ class ScriptedRAVE(nn_tilde.Module):
         channels = ["(L)", "(R)"] if stereo else ["(mono)"]
 
         self.fake_adain = rave.blocks.AdaptiveInstanceNormalization(0)
+
+        """
+        self.register_method(
+            "fill_buffer",
+            in_channels=1,
+            in_ratio=1,
+            out_channels=1,
+            out_ratio=1,
+            input_labels=['(signal) Input audio signal'],
+            output_labels=[
+                f'(signal) Reconstructed audio signal {channel}'
+                for channel in channels
+            ],
+        )
+        """
 
         self.register_method(
             "encode",
@@ -205,11 +227,11 @@ class ScriptedRAVE(nn_tilde.Module):
 
         self.register_method(
                 "myforward",
-                in_channels=1,
+                in_channels=2,
                 in_ratio=1,
                 out_channels=2 if stereo else 1,
                 out_ratio=1,
-                input_labels=['(signal) Input audio signal'],
+                input_labels=['(signal) Input audio signal', '(signal) Input audio signal'],
                 output_labels=[
                     f'(signal) Reconstructed audio signal {channel}'
                     for channel in channels
@@ -241,6 +263,37 @@ class ScriptedRAVE(nn_tilde.Module):
         self.reset_source = False,
         self.reset_target = False,
 
+    """
+    @torch.jit.export
+    def fill_buffer(self, x):
+        if self.record[0]:
+            print("enter record")
+            buffer = torch.zeros((x.shape[0], 1, self.target_buffer_size))
+            current_position = 0
+            chunk_length = x.shape[-1]
+            
+            while current_position < self.target_buffer_size:
+                #print(x.shape, buffer[:, :, current_position:current_position + chunk_length].shape)
+                buffer[:, :, current_position:current_position + chunk_length] = x
+                current_position += chunk_length
+    
+            target_pqmf = self.pqmf_speaker(buffer)
+            self.set_speaker5(self.speaker_encoder(target_pqmf).unsqueeze(2))
+            self.set_record = False
+
+        return x
+
+    @torch.jit.export
+    def fill_buffer(self, x):
+        chunk_length = x.shape[-1]
+        if self.current_position < self.target_buffer_size:
+            self.buffer[self.current_position:self.current_position + chunk_length] = x[0, :, 0]
+            self.current_position += chunk_length
+        else:
+            self.current_position = 0
+    """
+            
+        
     @torch.jit.export
     def encode(self, x):
         if self.is_using_adain:
@@ -287,12 +340,27 @@ class ScriptedRAVE(nn_tilde.Module):
 
     @torch.jit.export
     def myforward(self, x):
+
+        x_in = x[:, 0, :].unsqueeze(1)
+        t = x[:, 1, :].unsqueeze(1)
+
+        chunk_length = x_in.shape[-1]
+        if self.current_position < self.target_buffer_size:
+            self.buffer[self.current_position:self.current_position + chunk_length] = t[0, :, 0]
+            self.current_position += chunk_length
+        else:
+            self.current_position = 0
+
+        if self.record[0]:
+            target_pqmf = self.pqmf_speaker(self.buffer.unsqueeze(0).unsqueeze(1))
+            self.speaker5 = self.speaker_encoder(target_pqmf).unsqueeze(2)
+            self.set_record(False)
         
         if self.resampler is not None:
-            x = self.resampler.to_model_sampling_rate(x)
+            x_in = self.resampler.to_model_sampling_rate(x_in)
 
         if self.pqmf is not None:
-            x = self.pqmf(x)
+            x_in = self.pqmf(x_in)
 
         if self.speaker[0] == 0:
             self.target_emb = self.speaker1
@@ -300,10 +368,12 @@ class ScriptedRAVE(nn_tilde.Module):
             self.target_emb = self.speaker2
         elif self.speaker[0] == 2:
             self.target_emb = self.speaker3
-        else:
+        elif self.speaker[0] == 3:
             self.target_emb = self.speaker4
+        else:
+            self.target_emb = self.speaker5
 
-        z = self.encoder(x[: ,:6, :])
+        z = self.encoder(x_in[: ,:6, :])
         emb = self.target_emb.repeat(z.shape[0], 1, z.shape[-1])
 
         z = torch.cat((z, emb), dim=1)
@@ -324,6 +394,27 @@ class ScriptedRAVE(nn_tilde.Module):
 
         return y
 
+    
+    """
+    @torch.jit.export
+    def get_speaker5(self) -> torch.Tensor:
+        return self.speaker5[0]
+
+    @torch.jit.export
+    def set_speaker5(self, speaker5: torch.Tensor) -> int:
+        self.speaker5 = (speaker5, )
+        return 0
+    """
+    
+    @torch.jit.export
+    def get_record(self) -> bool:
+        return self.record[0]
+
+    @torch.jit.export
+    def set_record(self, record: bool) -> int:
+        self.record = (record, )
+        return 0
+    
     @torch.jit.export
     def get_speaker(self) -> int:
         return self.speaker[0]
