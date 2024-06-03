@@ -165,7 +165,7 @@ class LazyAudioDataset(data.Dataset):
         )
         
         speaker_id = ae.metadata['path'].split('/')[-2]
-
+      
         if self._transforms is not None:
             audio = self._transforms(audio)
             

@@ -250,6 +250,7 @@ class CachedPQMF(PQMF):
             stride=hkf.shape[0],
             bias=False,
         )
+        
         self.forward_conv.weight.data.copy_(hkf)
 
         self.inverse_conv = cc.Conv1d(

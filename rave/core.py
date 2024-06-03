@@ -52,8 +52,8 @@ def random_angle(min_f=20, max_f=8000, sr=24000):
     return rand
 
 
-def get_augmented_latent_size(latent_size: int, noise_augmentation: int, speaker_embedding_size: int):
-    return latent_size + noise_augmentation + speaker_embedding_size
+def get_augmented_latent_size(latent_size: int, noise_augmentation: int, speaker_embedding_size: int, pitch_embedding_size: int):
+    return latent_size + noise_augmentation + speaker_embedding_size + pitch_embedding_size
 
 
 def pole_to_z_filter(omega, amplitude=.9):
