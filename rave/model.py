@@ -111,13 +111,11 @@ class CrossEntropyProjection(nn.Module):
         super().__init__()
         self.layer_norm = torch.nn.LayerNorm(128)
         self.proj = nn.Conv1d(64, 100, 1, bias=False)
-        #self.softmax = torch.nn.Softmax(dim=1)
         
     def forward(self, x):
         z_for_CE = self.layer_norm(x)
         z_for_CE = self.proj(z_for_CE)
         z_for_CE = F.interpolate(z_for_CE, 148)
-        #z_for_CE = self.softmax(z_for_CE)
         return z_for_CE
 
 
@@ -152,14 +150,13 @@ class RAVE(pl.LightningModule):
         self.pqmf = None
         if pqmf is not None:
             self.pqmf = pqmf()
-            #self.pqmf_speaker = pqmf()
 
         self.encoder = encoder()
         self.decoder = decoder()
 
         #self.pqmf_speaker = pqmf()
         self.speaker_encoder = speaker_encoder()
-        spk_state, pqmf_state = self.load_speaker_statedict("/home/jupyter-arbu/RAVE/rave/pretrained/model000000081.model")
+        spk_state, pqmf_state = self.load_speaker_statedict("/home/jupyter-arbu/RAVE/rave/pretrained/model000000075.model")
 
         #ONLY LOAD PRETRAINED SPK_EMB WHEN TRAINING
         #(REMEMBER TO RESET THIS MANUALLY IN CONFIG WHEN EXPORTING)
@@ -168,8 +165,6 @@ class RAVE(pl.LightningModule):
             print("Loaded pretrained speaker encoder")
         else:
             print("Loaded my-trained speaker encoder")
-            
-        #self.pqmf_speaker.load_state_dict(pqmf_state)
 
         # .... RAVE LOSS .... #
         #self.discriminator = discriminator()
@@ -293,12 +288,6 @@ class RAVE(pl.LightningModule):
         return loaded_state, pqmfdict
 
     def training_step(self, batch, batch_idx):
-
-        #pitch = get_pitch(batch[0], 1024).unsqueeze(-1)
-        #pitch = upsample(pitch, 1024)
-        #ex, phase = self.excitation_module(pitch)
-        #rms_val = get_rms_val(batch[0], ex, 1024, 0.1)
-        #ex = (ex * rms_val).unsqueeze(1)
         
         ex = self.excitation_module(batch[0],
                                     torch.ones((batch[0].shape[0], batch[0].shape[1]))).unsqueeze(1)
@@ -592,16 +581,10 @@ class RAVE(pl.LightningModule):
         emb = emb.repeat(z.shape[0], 1, z.shape[-1])
         
         z = torch.cat((z, emb), dim=1)
-        #z, = self.encoder.reparametrize(self.encoder(x))[:1]
         return z
 
     def decode(self, z, x):
 
-        #pitch = get_pitch(x.squeeze(1), 1024).unsqueeze(-1)
-        #pitch = upsample(pitch, 1024)
-        #ex, phase = self.excitation_module(pitch)
-        #rms_val = get_rms_val(x.squeeze(1), ex, 1024, 0.1)
-        #ex = (ex * rms_val).unsqueeze(1)
         ex = self.excitation_module(x.squeeze(1), torch.ones(1)).unsqueeze(1)
 
         ex_multiband = self.pqmf(ex)
@@ -616,11 +599,6 @@ class RAVE(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
 
-        #pitch = get_pitch(batch[0], 1024).unsqueeze(-1)
-        #pitch = upsample(pitch, 1024)
-        #ex, phase = self.excitation_module(pitch)
-        #rms_val = get_rms_val(batch[0], ex, 1024, 0.1)
-        #ex = (ex * rms_val).unsqueeze(1)
         ex = self.excitation_module(batch[0],
                                     torch.ones((batch[0].shape[0], batch[0].shape[1]))).unsqueeze(1)
         
@@ -675,11 +653,7 @@ class RAVE(pl.LightningModule):
             inp_ind, tar_ind = [ids.index(element) for element in chosen_elements]
 
         inp = batch[0][inp_ind].unsqueeze(0)
-        #pitch = get_pitch(inp, 1024).unsqueeze(-1)
-        #pitch = upsample(pitch, 1024)
-        #ex, phase = self.excitation_module(pitch)
-        #rms_val = get_rms_val(inp, ex, 1024, 0.1)
-        #ex = (ex * rms_val).unsqueeze(1)
+
         ex = self.excitation_module(inp,
                                     torch.ones((inp.shape[0], inp.shape[1]))).unsqueeze(1)
         

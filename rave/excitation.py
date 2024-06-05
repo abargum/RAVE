@@ -33,7 +33,6 @@ def estimate(
         torch.tensor(0, device=tau.device).type(signal.dtype),
     )
 
-
 def _frame(signal: torch.Tensor, frame_length: int, frame_stride: int) -> torch.Tensor:
     # window the signal into overlapping frames, padding to at least 1 frame
     if signal.shape[-1] < frame_length:
@@ -122,13 +121,13 @@ class ExcitationModule(torch.nn.Module):
         
         # signal
         signal = (torch.sin(phases) * amp).sum(-1, keepdim=True)
-        signal += noise_mask
-        signal = signal.squeeze(-1) #/ torch.max(signal)
-
-        rms_val = self.get_rms_val(audio, signal, self.encoding_ratio, self.rms_thresh)
-        ex = (signal * rms_val)
+        #rms_val = self.get_rms_val(audio, signal.squeeze(-1), self.encoding_ratio, self.rms_thresh).unsqueeze(-1)
+        #signal += (noise_mask * rms_val)
+        signal = signal.squeeze(-1)
+        
+        ex = signal
  
-        return ex
+        return signal
 
     def remove_above_nyquist(self, amplitudes, pitch, sampling_rate: int):
         n_harm = amplitudes.shape[-1]
@@ -161,9 +160,9 @@ class ExcitationModule(torch.nn.Module):
         rms_val[rms_val < threshold] = 0
         return rms_val.squeeze(-1)
 
-    def get_pitch(self, x, encoding_ratio: int = 1024, fs: int = 44100, pitch_min: float = 60.0):
+    def get_pitch(self, x, encoding_ratio: int = 1024, fs: int = 44100, pitch_min: float = 70.0):
         desired_num_frames = x.shape[-1] / encoding_ratio
         tau_max = int(fs / pitch_min)
         frame_length = 2 * tau_max
         frame_stride = (x.shape[-1] - frame_length) / (desired_num_frames - 1) / fs
-        return estimate(x, sample_rate=fs, pitch_min=pitch_min, pitch_max=800.0, frame_stride=frame_stride)
+        return estimate(x, sample_rate=fs, pitch_min=pitch_min, pitch_max=400.0, frame_stride=frame_stride)
