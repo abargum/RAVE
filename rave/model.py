@@ -15,7 +15,7 @@ import torch.nn.functional as F
 import wandb
 import random
 import json
-from .pitch_utils import get_f0_norm
+from .pitch_utils import get_f0_norm, extract_f0_median_std
 
 import rave.core
 
@@ -578,6 +578,19 @@ class RAVE(pl.LightningModule):
 
     def encode(self, x):
         
+        src_f0_median, src_f0_std = extract_f0_median_std(
+            x[:, 0, :],
+            44100,
+            1024,
+            1024
+        )
+
+        src_f0_median = src_f0_median.unsqueeze(0).repeat(x.shape[0],1)
+        src_f0_std = src_f0_std.unsqueeze(0).repeat(x.shape[0],1)
+
+        f0_norm, log_f0_norm, _ = get_f0_norm(x[:, 0, :], src_f0_median, src_f0_std, 44100, 1024, 1024)
+        f0_norm = torch.permute(f0_norm, (0, 2, 1))
+        
         if self.pqmf is not None and self.enable_pqmf_encode:
             x = self.pqmf(x)
 
@@ -585,7 +598,8 @@ class RAVE(pl.LightningModule):
 
         emb = self.speaker_encoder(x).unsqueeze(-1)
         emb = emb.repeat(z.shape[0], 1, z.shape[-1])
-        z = torch.cat((z, emb), dim=1)
+        
+        z = torch.cat((z, emb, f0_norm), dim=1)
         #z, = self.encoder.reparametrize(self.encoder(x))[:1]
         return z
 
@@ -597,8 +611,8 @@ class RAVE(pl.LightningModule):
         return y
 
     def forward(self, x):
-        dummy = self.pqmf_speaker(x)
-        dummy = self.pqmf_speaker.inverse(dummy)
+        #dummy = self.pqmf_speaker(x)
+        #dummy = self.pqmf_speaker.inverse(dummy)
         return self.decode(self.encode(x))
 
     def validation_step(self, batch, batch_idx):

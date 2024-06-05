@@ -26,6 +26,7 @@ import rave.model
 import rave.blocks
 import rave.core
 import rave.resampler
+from rave.pitch_utils import get_f0_norm, extract_f0_median_std
 
 FLAGS = flags.FLAGS
 
@@ -68,7 +69,7 @@ class ScriptedRAVE(nn_tilde.Module):
         self.encoder = pretrained.encoder
         self.decoder = pretrained.decoder
 
-        self.pqmf_speaker = pretrained.pqmf_speaker
+        #self.pqmf_speaker = pretrained.pqmf
         self.speaker_encoder = pretrained.speaker_encoder
 
         emb_audio, _ = librosa.load("../vctk-small/p225/p225_005_mic1.flac", sr=44100, mono=True)
@@ -81,10 +82,10 @@ class ScriptedRAVE(nn_tilde.Module):
         emb_audio3 = torch.tensor(emb_audio3[:131072]).unsqueeze(0).unsqueeze(1)
         emb_audio4 = torch.tensor(emb_audio4[:131072]).unsqueeze(0).unsqueeze(1)
         
-        emb_audio_pqmf = self.pqmf_speaker(torch.tensor(emb_audio))
-        emb_audio_pqmf2 = self.pqmf_speaker(torch.tensor(emb_audio2))
-        emb_audio_pqmf3 = self.pqmf_speaker(torch.tensor(emb_audio3))
-        emb_audio_pqmf4 = self.pqmf_speaker(torch.tensor(emb_audio4))
+        emb_audio_pqmf = self.pqmf(torch.tensor(emb_audio))
+        emb_audio_pqmf2 = self.pqmf(torch.tensor(emb_audio2))
+        emb_audio_pqmf3 = self.pqmf(torch.tensor(emb_audio3))
+        emb_audio_pqmf4 = self.pqmf(torch.tensor(emb_audio4))
         
         self.speaker1 = self.speaker_encoder(emb_audio_pqmf).unsqueeze(2)
         self.speaker2 = self.speaker_encoder(emb_audio_pqmf2).unsqueeze(2)
@@ -181,7 +182,6 @@ class ScriptedRAVE(nn_tilde.Module):
                 for channel in channels
             ],
         )
-        """
 
         self.register_method(
             "encode",
@@ -224,6 +224,7 @@ class ScriptedRAVE(nn_tilde.Module):
                 for channel in channels
             ],
         )
+        """
 
         self.register_method(
                 "myforward",
@@ -293,7 +294,7 @@ class ScriptedRAVE(nn_tilde.Module):
             self.current_position = 0
     """
             
-        
+    """
     @torch.jit.export
     def encode(self, x):
         if self.is_using_adain:
@@ -337,13 +338,30 @@ class ScriptedRAVE(nn_tilde.Module):
 
     def forward(self, x):
         return self.decode(self.encode(x), from_forward=True)
+    """
 
     @torch.jit.export
     def myforward(self, x):
 
-        x_in = x[:, 0, :].unsqueeze(1)
-        t = x[:, 1, :].unsqueeze(1)
+        x_in = x[:, 0, :]
+        t = x[:, 1, :]
 
+        src_f0_median, src_f0_std = extract_f0_median_std(
+            x_in,
+            44100,
+            1024,
+            1024
+        )
+
+        src_f0_median = src_f0_median.unsqueeze(0).repeat(x.shape[0], 1)
+        src_f0_std = src_f0_std.unsqueeze(0).repeat(x.shape[0], 1)
+        
+        f0_norm, log_f0_norm, _ = get_f0_norm(x_in, src_f0_median, src_f0_std, 44100, 1024, 1024)
+        f0_norm = torch.permute(f0_norm, (0, 2, 1))
+        
+        x_in = x_in.unsqueeze(1)
+
+        """
         chunk_length = x_in.shape[-1]
         if self.current_position < self.target_buffer_size:
             self.buffer[self.current_position:self.current_position + chunk_length] = t[0, :, 0]
@@ -352,9 +370,10 @@ class ScriptedRAVE(nn_tilde.Module):
             self.current_position = 0
 
         if self.record[0]:
-            target_pqmf = self.pqmf_speaker(self.buffer.unsqueeze(0).unsqueeze(1))
-            self.speaker5 = self.speaker_encoder(target_pqmf).unsqueeze(2)
+            #target_pqmf = self.pqmf_speaker(self.buffer.unsqueeze(0).unsqueeze(1))
+            #self.speaker5 = self.speaker_encoder(target_pqmf).unsqueeze(2)
             self.set_record(False)
+        """
         
         if self.resampler is not None:
             x_in = self.resampler.to_model_sampling_rate(x_in)
@@ -373,10 +392,10 @@ class ScriptedRAVE(nn_tilde.Module):
         else:
             self.target_emb = self.speaker5
 
-        z = self.encoder(x_in[: ,:6, :])
+        z = self.encoder(x_in[: , :6, :])
         emb = self.target_emb.repeat(z.shape[0], 1, z.shape[-1])
 
-        z = torch.cat((z, emb), dim=1)
+        z = torch.cat((z, emb, f0_norm), dim=1)
 
         if self.stereo:
             z = torch.cat([z, z], 0)
