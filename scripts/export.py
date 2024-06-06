@@ -80,7 +80,6 @@ class ScriptedRAVE(nn_tilde.Module):
     
         self.sr = pretrained.sr
         self.tar = emb_audio.squeeze(0)
-        print(self.tar.shape)
 
         self.resampler = None
 
@@ -282,37 +281,29 @@ class ScriptedRAVE(nn_tilde.Module):
         
         if self.resampler is not None:
             x = self.resampler.to_model_sampling_rate(x[:, 0, :].unsqueeze(1))
-
-        #ex = self.excitation_module(x.squeeze(1)).unsqueeze(1)
         ex = self.excitation_module(x[:, 0, :], x[:, 1, :]).unsqueeze(1)
-
+    
         if self.pqmf is not None:
             x = self.pqmf(x[:, 0, :].unsqueeze(1))
             ex_multiband = self.pqmf(ex)
 
-        #dummy_emb = self.speaker_encoder(x)
-
         z = self.encoder(x[: ,:6, :])
         emb = self.target_emb.repeat(z.shape[0], 1, z.shape[-1])
         z = torch.cat((z, emb), dim=1)
-
-        #ex_multiband = torch.rand(x.shape)
         
         y = self.decoder(z, ex_multiband)
 
         if self.pqmf is not None:
             y = self.pqmf.inverse(y)
-            #ex = self.pqmf.inverse(ex_multiband)
+            ex = self.pqmf.inverse(ex_multiband)
 
         if self.resampler is not None:
             y = self.resampler.from_model_sampling_rate(y)
 
         if self.stereo:
             y = torch.cat(y.chunk(2, 0), 1)
-
-        #out = torch.cat((y, ex), dim=1)
             
-        return y
+        return ex
         
     """
     @torch.jit.export
