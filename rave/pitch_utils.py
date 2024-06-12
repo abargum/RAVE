@@ -113,6 +113,7 @@ def quantize_f0_norm(y, f0_median, f0_std, fs: int, win_length: int, hop_length:
 def get_f0_norm(y, f0_median, f0_std, fs: int, win_length: int, hop_length: int, num_f0_bins: int=256):
     log_f0_norm, f0 = quantize_f0_norm(y, f0_median, f0_std, fs, win_length, hop_length)
     log_f0_norm += 0.5
+    #log_f0_norm = torch.linspace(1, 0, log_f0_norm.shape[-1]).unsqueeze(0)
     bins = torch.linspace(0, 1, num_f0_bins+1).to(y)
     f0_one_hot_idxs = torch.bucketize(log_f0_norm, bins, right=True) - 1
     f0_one_hot = one_hot(f0_one_hot_idxs, num_f0_bins+1)
