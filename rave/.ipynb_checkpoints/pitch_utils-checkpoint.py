@@ -1,16 +1,18 @@
 import librosa
 import numpy as np
+import math
 import torch
 from scipy.fft import dct, idct
 import json
 import os
 import argparse
 
+# ------ FROM TORCH YIN --------
 def estimate(
     signal,
-    sample_rate: float,
-    pitch_min: float = 20,
-    pitch_max: float = 20000,
+    sample_rate: int = 44100,
+    pitch_min: float = 20.0,
+    pitch_max: float = 20000.0,
     frame_stride: float = 0.01,
     threshold: float = 0.1,
 ) -> torch.Tensor:
@@ -35,15 +37,18 @@ def estimate(
         torch.tensor(0, device=tau.device).type(signal.dtype),
     )
 
+
 def _frame(signal: torch.Tensor, frame_length: int, frame_stride: int) -> torch.Tensor:
     # window the signal into overlapping frames, padding to at least 1 frame
     if signal.shape[-1] < frame_length:
         signal = torch.nn.functional.pad(signal, [0, frame_length - signal.shape[-1]])
     return signal.unfold(dimension=-1, size=frame_length, step=frame_stride)
 
+
 def _diff(frames: torch.Tensor, tau_max: int) -> torch.Tensor:
+    # frames: n_frames, frame_length
     # compute the frame-wise autocorrelation using the FFT
-    fft_size = 2 ** (-int(-np.log(frames.shape[-1]) // np.log(2)) + 1)
+    fft_size = int(2 ** (-int(-math.log(frames.shape[-1]) // math.log(2)) + 1))
     fft = torch.fft.rfft(frames, fft_size, dim=-1)
     corr = torch.fft.irfft(fft * fft.conj())[..., :tau_max]
 
@@ -53,16 +58,16 @@ def _diff(frames: torch.Tensor, tau_max: int) -> torch.Tensor:
     corr_tau = sqrcs.flip(-1)[..., :tau_max] - sqrcs[..., :tau_max]
     diff = corr_0 + corr_tau - 2 * corr
 
+    #print(diff.device, torch.arange(1, diff.shape[-1]).device)
+
     # cumulative mean normalized difference function (equation 8)
     return (
         diff[..., 1:]
         * torch.arange(1, diff.shape[-1], device=diff.device)
-        / torch.maximum(
-            diff[..., 1:].cumsum(-1),
-            torch.tensor(1e-5, device=diff.device),
-        )
+        / torch.clamp(diff[..., 1:].cumsum(-1), min=1e-5)
     )
 
+@torch.jit.script
 def _search(cmdf: torch.Tensor, tau_max: int, threshold: float) -> torch.Tensor:
     # mask all periods after the first cmdf below the threshold
     # if none are below threshold (argmax=0), this is a non-periodic frame
@@ -71,48 +76,59 @@ def _search(cmdf: torch.Tensor, tau_max: int, threshold: float) -> torch.Tensor:
     beyond_threshold = torch.arange(cmdf.shape[-1], device=cmdf.device) >= first_below
 
     # mask all periods with upward sloping cmdf to find the local minimum
-    increasing_slope = torch.nn.functional.pad(cmdf.diff() >= 0.0, [0, 1], value=1)
+    increasing_slope = torch.nn.functional.pad(cmdf.diff() >= 0.0, [0, 1], value=1.0)
 
     # find the first period satisfying both constraints
     return (beyond_threshold & increasing_slope).int().argmax(-1)
 
-def get_pitch(x, block_size, fs=44100, pitch_min=60, pitch_max=800):
+# ----------------------------------
+
+def get_pitch(x, block_size: int, fs: int=44100, pitch_min: float=70.0, pitch_max: float=400.0):
     desired_num_frames = x.shape[-1] / block_size
     tau_max = int(fs / pitch_min)
     frame_length = 2 * tau_max
     frame_stride = (x.shape[-1] - frame_length) / (desired_num_frames - 1) / fs
     f0 = estimate(x, sample_rate=fs, pitch_min=pitch_min, pitch_max=pitch_max, frame_stride=frame_stride)
-    return f0
+    return f0 
 
-def one_hot(a, num_classes):
+def one_hot(a, num_classes: int):
     a_flat = a.reshape(-1)
     one_hot_flat = torch.eye(num_classes).to(a)
     one_hot_flat = one_hot_flat[a_flat]
-    one_hot_batched = one_hot_flat.reshape(*a.shape, num_classes)
+    shape = a.shape
+    one_hot_batched = one_hot_flat.reshape(shape[0], shape[1], num_classes)
     return one_hot_batched
 
-def extract_utterance_log_f0(y, sr, frame_len_samples, hop_len_samples, voiced_prob_cutoff=0.2):
+def extract_utterance_log_f0(y, sr: int, frame_len_samples: int, hop_len_samples: int, voiced_prob_cutoff: float=0.2):
+    f0 = get_pitch(y, frame_len_samples)
+    #f0[f0 == 0] = float('nan')
+    #log_f0 = torch.log(f0)
+    log_f0 = f0
+    return log_f0, f0
+
+def extract_utterance_log_f0_for_med_std(y, sr: int, frame_len_samples: int, hop_len_samples: int, voiced_prob_cutoff: float=0.2):
     f0 = get_pitch(y, frame_len_samples)
     f0[f0 == 0] = float('nan')
-    log_f0 = torch.log(f0)
-    return log_f0
+    #log_f0 = torch.log(f0)
+    log_f0 = f0
+    return log_f0, f0
 
-def quantize_f0_norm(y, f0_median, f0_std, fs, win_length, hop_length):
-    utt_log_f0 = extract_utterance_log_f0(y, fs, win_length, hop_length)
+def quantize_f0_norm(y, f0_median, f0_std, fs: int, win_length: int, hop_length: int):
+    utt_log_f0, f0 = extract_utterance_log_f0(y, fs, win_length, hop_length)
     log_f0_norm = ((utt_log_f0 - f0_median) / f0_std) / 4.0
-    return log_f0_norm
+    return log_f0_norm, f0
 
-def get_f0_norm(y, f0_median, f0_std, fs, win_length, hop_length, num_f0_bins=256):
-    log_f0_norm = quantize_f0_norm(y, f0_median, f0_std, fs, win_length, hop_length) + 0.5
+def get_f0_norm(y, f0_median, f0_std, fs: int, win_length: int, hop_length: int, num_f0_bins: int=256):
+    log_f0_norm, f0 = quantize_f0_norm(y, f0_median, f0_std, fs, win_length, hop_length)
+    #log_f0_norm += 0.5
+    #bins = torch.linspace(0, 1, num_f0_bins+1).to(y)
+    #f0_one_hot_idxs = torch.bucketize(log_f0_norm, bins, right=True) - 1
+    #f0_one_hot = one_hot(f0_one_hot_idxs, num_f0_bins+1)
 
-    bins = torch.linspace(0, 1, num_f0_bins+1).to(y)
-    f0_one_hot_idxs = torch.bucketize(log_f0_norm, bins, right=True) - 1
-    f0_one_hot = one_hot(f0_one_hot_idxs, num_f0_bins+1)
+    return log_f0_norm, f0
 
-    return f0_one_hot, log_f0_norm
-
-def extract_f0_median_std(wav, fs, win_length, hop_length):
-    log_f0_vals = extract_utterance_log_f0(wav, fs, win_length, hop_length)
+def extract_f0_median_std(wav, fs: int, win_length: int, hop_length: int):
+    log_f0_vals, _ = extract_utterance_log_f0_for_med_std(wav, fs, win_length, hop_length)
     log_f0_vals = log_f0_vals[~torch.isnan(log_f0_vals)]
 
     log_f0_median = torch.median(log_f0_vals)
@@ -175,7 +191,7 @@ def main():
     print(speaker_stats)
     
     # Save the results to a file
-    with open('speaker_stats.json', 'w') as json_file:
+    with open('speaker_stats_no_log.json', 'w') as json_file:
         json.dump(speaker_stats, json_file, indent=4)
 
 if __name__ == '__main__':

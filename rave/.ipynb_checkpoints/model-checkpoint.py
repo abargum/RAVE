@@ -15,7 +15,7 @@ import torch.nn.functional as F
 import wandb
 import random
 import json
-from .pitch_utils import get_f0_norm
+from .pitch_utils import get_f0_norm, extract_f0_median_std
 
 import rave.core
 
@@ -134,6 +134,7 @@ class RAVE(pl.LightningModule):
         encoder,
         decoder,
         speaker_encoder,
+        pitch_encoder,
         discriminator,
         phase_1_duration,
         gan_loss,
@@ -158,6 +159,7 @@ class RAVE(pl.LightningModule):
 
         self.encoder = encoder()
         self.decoder = decoder()
+        self.pitch_encoder = pitch_encoder()
 
         #self.pqmf_speaker = pqmf()
         self.speaker_encoder = speaker_encoder()
@@ -170,6 +172,8 @@ class RAVE(pl.LightningModule):
             #self.pqmf_speaker.load_state_dict(pqmf_state)
         else:
             print("loaded my speaker embedding")
+
+        self.speaker_encoder.eval()
 
         # .... RAVE LOSS .... #
         #self.discriminator = discriminator()
@@ -243,7 +247,8 @@ class RAVE(pl.LightningModule):
         
         #gen_p = list(self.encoder.parameters())
         gen_p = list(self.decoder.parameters())
-        gen_p += list(self.speaker_encoder.parameters())
+        #gen_p += list(self.speaker_encoder.parameters())
+        gen_p += list(self.pitch_encoder.parameters())
         
         dis_p = list(self.discriminator.parameters())
         dis_p += list(self.new_discriminator.parameters())
@@ -308,7 +313,7 @@ class RAVE(pl.LightningModule):
         medians = torch.tensor([global_speaker_dict[id]['mean'] for id in ids]).unsqueeze(1).to(x)
         stds = torch.tensor([global_speaker_dict[id]['std'] for id in ids]).unsqueeze(1).to(x)
         f0_norm, log_f0_norm = get_f0_norm(batch[0], medians, stds, 44100, 1024, 1024)
-        f0_norm = torch.permute(f0_norm, (0, 2, 1))
+        f0_norm = f0_norm.unsqueeze(1)
 
         if self.pqmf is not None:
             x_multiband = self.pqmf(x)
@@ -334,14 +339,18 @@ class RAVE(pl.LightningModule):
         #z, reg = self.encoder.reparametrize(z_pre_reg)[:2]
        
         with torch.no_grad():
-            emb = self.speaker_encoder(x_multiband).unsqueeze(2)
+            emb = self.speaker_encoder(x_multiband)
+
+        pitch_emb = self.pitch_encoder(f0_norm, emb)
+        
+        emb = emb.unsqueeze(2)
         emb = emb.repeat(1, 1, z_pre_reg.shape[-1])
 
         p.tick('encode')
 
         # DECODE LATENT
         y_multiband = self.decoder(
-            torch.cat((z_pre_reg.detach(), emb, f0_norm), dim=1)
+            torch.cat((z_pre_reg.detach(), emb, pitch_emb), dim=1)
         )
 
         p.tick('decode')
@@ -578,14 +587,31 @@ class RAVE(pl.LightningModule):
 
     def encode(self, x):
         
+        src_f0_median, src_f0_std = extract_f0_median_std(
+            x[:, 0, :],
+            44100,
+            1024,
+            1024
+        )
+
+        src_f0_median = src_f0_median.unsqueeze(0).repeat(x.shape[0],1)
+        src_f0_std = src_f0_std.unsqueeze(0).repeat(x.shape[0],1)
+
+        f0_norm, log_f0_norm = get_f0_norm(x[:, 0, :], src_f0_median, src_f0_std, 44100, 1024, 1024)
+        f0_norm = f0_norm.unsqueeze(1)
+        
         if self.pqmf is not None and self.enable_pqmf_encode:
             x = self.pqmf(x)
 
         z = self.encoder(x[:, :6, :])
 
-        emb = self.speaker_encoder(x).unsqueeze(-1)
+        emb = self.speaker_encoder(x)
+        pitch_emb = self.pitch_encoder(f0_norm, emb)
+
+        emb = emb.unsqueeze(-1)
         emb = emb.repeat(z.shape[0], 1, z.shape[-1])
-        z = torch.cat((z, emb), dim=1)
+        
+        z = torch.cat((z, emb, pitch_emb), dim=1)
         #z, = self.encoder.reparametrize(self.encoder(x))[:1]
         return z
 
@@ -597,8 +623,8 @@ class RAVE(pl.LightningModule):
         return y
 
     def forward(self, x):
-        dummy = self.pqmf_speaker(x)
-        dummy = self.pqmf_speaker.inverse(dummy)
+        #dummy = self.pqmf_speaker(x)
+        #dummy = self.pqmf_speaker.inverse(dummy)
         return self.decode(self.encode(x))
 
     def validation_step(self, batch, batch_idx):
@@ -608,7 +634,7 @@ class RAVE(pl.LightningModule):
         medians = torch.tensor([global_speaker_dict[id]['mean'] for id in ids]).unsqueeze(1).to(x)
         stds = torch.tensor([global_speaker_dict[id]['std'] for id in ids]).unsqueeze(1).to(x)
         f0_norm, log_f0_norm = get_f0_norm(batch[0], medians, stds, 44100, 1024, 1024)
-        f0_norm = torch.permute(f0_norm, (0, 2, 1))
+        f0_norm = f0_norm.unsqueeze(1)
 
         if self.pqmf is not None:
             x_multiband = self.pqmf(x)
@@ -627,12 +653,15 @@ class RAVE(pl.LightningModule):
         mean = None
 
         with torch.no_grad():
-            emb = self.speaker_encoder(x_multiband).unsqueeze(2)
+            emb = self.speaker_encoder(x_multiband)
 
+        pitch_emb = self.pitch_encoder(f0_norm, emb)
+
+        emb = emb.unsqueeze(-1)
         emb = emb.repeat(1, 1, z.shape[-1])
         
         #z = self.encoder.reparametrize(z)[0]
-        y = self.decoder(torch.cat((z.detach(), emb, f0_norm), dim=1))
+        y = self.decoder(torch.cat((z.detach(), emb, pitch_emb), dim=1))
 
         if self.pqmf is not None:
             x = self.pqmf.inverse(x_multiband)
@@ -663,7 +692,7 @@ class RAVE(pl.LightningModule):
         medians = torch.tensor([global_speaker_dict[inp_id]['mean']]).unsqueeze(1).to(x)
         stds = torch.tensor([global_speaker_dict[inp_id]['std']]).unsqueeze(1).to(x)
         f0_norm, log_f0_norm = get_f0_norm(batch[0][inp_ind].unsqueeze(0), medians, stds, 44100, 1024, 1024)
-        f0_norm = torch.permute(f0_norm, (0, 2, 1))
+        f0_norm = f0_norm.unsqueeze(1)
 
         if self.pqmf is not None:
             inp_multiband = self.pqmf(inp)
@@ -673,11 +702,14 @@ class RAVE(pl.LightningModule):
             z = self.encoder(inp_multiband[:, :6, :])
 
         with torch.no_grad():
-            tar_emb = self.speaker_encoder(tar_multiband).unsqueeze(2)
+            tar_emb = self.speaker_encoder(tar_multiband)
 
+        pitch_emb = self.pitch_encoder(f0_norm, tar_emb)
+
+        tar_emb = tar_emb.unsqueeze(-1)
         tar_emb = tar_emb.repeat(1, 1, z.shape[-1])
 
-        y_conv = self.decoder(torch.cat((z.detach(), tar_emb, f0_norm), dim=1))
+        y_conv = self.decoder(torch.cat((z.detach(), tar_emb, pitch_emb), dim=1))
 
         if self.pqmf is not None:
             outp = self.pqmf.inverse(y_conv)

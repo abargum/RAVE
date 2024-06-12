@@ -1164,3 +1164,95 @@ class SpeakerRAVE_TEST(nn.Module):
         else:
             dummy = self.pqmf(x)
         return x
+
+class Condional_LayerNorm(nn.Module):
+
+    def __init__(self,
+                normal_shape,
+                epsilon=1e-5
+                ):
+        super(Condional_LayerNorm, self).__init__()
+        if isinstance(normal_shape, int):
+            self.normal_shape = normal_shape
+        
+        self.speaker_embedding_dim = 256
+        self.epsilon = epsilon
+        self.W_scale = nn.Linear(self.speaker_embedding_dim, self.normal_shape)
+        self.W_bias = nn.Linear(self.speaker_embedding_dim, self.normal_shape)
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        torch.nn.init.constant_(self.W_scale.weight, 0.0)
+        torch.nn.init.constant_(self.W_scale.bias, 1.0)
+        torch.nn.init.constant_(self.W_bias.weight, 0.0)
+        torch.nn.init.constant_(self.W_bias.bias, 0.0)
+    
+    def forward(self, x, speaker_embedding):
+        mean = x.mean(dim=-1, keepdim=True)
+        var = ((x - mean) ** 2).mean(dim=-1, keepdim=True)
+        std = (var + self.epsilon).sqrt()
+        y = (x - mean) / std
+        scale = self.W_scale(speaker_embedding)
+        bias = self.W_bias(speaker_embedding)
+        y *= scale.unsqueeze(-1)
+        y += bias.unsqueeze(-1)
+
+        return y
+    
+class Pitch_Encoder(nn.Module):
+
+    def __init__(self,
+                hidden_dim=256,
+                out_dim=256):
+        
+        super(Pitch_Encoder, self).__init__()
+        
+        self.init_conv = normalization(cc.Conv1d(1,
+                                            hidden_dim,
+                                            kernel_size=1,
+                                            stride=1,
+                                            padding=cc.get_padding(1)))
+        
+        self.conv1 = normalization(cc.Conv1d(hidden_dim,
+                                            hidden_dim,
+                                            kernel_size=1,
+                                            stride=1,
+                                            padding=cc.get_padding(1)))
+        
+        self.relu1 = nn.LeakyReLU()
+        self.cln1 = Condional_LayerNorm(normal_shape=hidden_dim)
+
+        self.conv2 = normalization(cc.Conv1d(hidden_dim,
+                                            hidden_dim,
+                                            kernel_size=1,
+                                            stride=1,
+                                            padding=cc.get_padding(1)))
+        
+        self.relu2 = nn.LeakyReLU()
+        self.cln2 = Condional_LayerNorm(normal_shape=hidden_dim)
+
+        self.conv3 = normalization(cc.Conv1d(hidden_dim,
+                                            out_dim,
+                                            kernel_size=1,
+                                            stride=1,
+                                            padding=cc.get_padding(1)))
+        
+        self.relu3 = nn.LeakyReLU()
+        self.cln3 = Condional_LayerNorm(normal_shape=out_dim)
+
+    def forward(self, x, speaker):
+        x = self.init_conv(x)
+
+        x = self.conv1(x)
+        x = self.relu1(x)
+        x = self.cln1(x, speaker)
+
+        x = self.conv2(x)
+        x = self.relu2(x)
+        x = self.cln2(x, speaker)
+
+        x = self.conv3(x)
+        x = self.relu3(x)
+        x = self.cln3(x, speaker)
+
+        return x

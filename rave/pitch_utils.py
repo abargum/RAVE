@@ -101,8 +101,16 @@ def one_hot(a, num_classes: int):
 
 def extract_utterance_log_f0(y, sr: int, frame_len_samples: int, hop_len_samples: int, voiced_prob_cutoff: float=0.2):
     f0 = get_pitch(y, frame_len_samples)
+    #f0[f0 == 0] = float('nan')
+    #log_f0 = torch.log(f0)
+    log_f0 = f0
+    return log_f0, f0
+
+def extract_utterance_log_f0_for_med_std(y, sr: int, frame_len_samples: int, hop_len_samples: int, voiced_prob_cutoff: float=0.2):
+    f0 = get_pitch(y, frame_len_samples)
     f0[f0 == 0] = float('nan')
-    log_f0 = torch.log(f0)
+    #log_f0 = torch.log(f0)
+    log_f0 = f0
     return log_f0, f0
 
 def quantize_f0_norm(y, f0_median, f0_std, fs: int, win_length: int, hop_length: int):
@@ -112,15 +120,15 @@ def quantize_f0_norm(y, f0_median, f0_std, fs: int, win_length: int, hop_length:
 
 def get_f0_norm(y, f0_median, f0_std, fs: int, win_length: int, hop_length: int, num_f0_bins: int=256):
     log_f0_norm, f0 = quantize_f0_norm(y, f0_median, f0_std, fs, win_length, hop_length)
-    log_f0_norm += 0.5
-    bins = torch.linspace(0, 1, num_f0_bins+1).to(y)
-    f0_one_hot_idxs = torch.bucketize(log_f0_norm, bins, right=True) - 1
-    f0_one_hot = one_hot(f0_one_hot_idxs, num_f0_bins+1)
+    #log_f0_norm += 0.5
+    #bins = torch.linspace(0, 1, num_f0_bins+1).to(y)
+    #f0_one_hot_idxs = torch.bucketize(log_f0_norm, bins, right=True) - 1
+    #f0_one_hot = one_hot(f0_one_hot_idxs, num_f0_bins+1)
 
-    return f0_one_hot, log_f0_norm, f0
+    return log_f0_norm, f0
 
 def extract_f0_median_std(wav, fs: int, win_length: int, hop_length: int):
-    log_f0_vals, _ = extract_utterance_log_f0(wav, fs, win_length, hop_length)
+    log_f0_vals, _ = extract_utterance_log_f0_for_med_std(wav, fs, win_length, hop_length)
     log_f0_vals = log_f0_vals[~torch.isnan(log_f0_vals)]
 
     log_f0_median = torch.median(log_f0_vals)
@@ -183,7 +191,7 @@ def main():
     print(speaker_stats)
     
     # Save the results to a file
-    with open('speaker_stats.json', 'w') as json_file:
+    with open('speaker_stats_no_log.json', 'w') as json_file:
         json.dump(speaker_stats, json_file, indent=4)
 
 if __name__ == '__main__':
