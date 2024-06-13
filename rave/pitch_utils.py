@@ -6,6 +6,7 @@ from scipy.fft import dct, idct
 import json
 import os
 import argparse
+import torch.nn.functional as F
 
 # ------ FROM TORCH YIN --------
 def estimate(
@@ -99,34 +100,40 @@ def one_hot(a, num_classes: int):
     one_hot_batched = one_hot_flat.reshape(shape[0], shape[1], num_classes)
     return one_hot_batched
 
-def extract_utterance_log_f0(y, sr: int, frame_len_samples: int, hop_len_samples: int, voiced_prob_cutoff: float=0.2):
+def extract_utterance_log_f0(y, sr: int, frame_len_samples: int, voiced_prob_cutoff: float=0.2):
     f0 = get_pitch(y, frame_len_samples)
     f0[f0 == 0] = float('nan')
     log_f0 = torch.log(f0)
     return log_f0, f0
 
-def quantize_f0_norm(y, f0_median, f0_std, fs: int, win_length: int, hop_length: int):
-    utt_log_f0, f0 = extract_utterance_log_f0(y, fs, win_length, hop_length)
-    log_f0_norm = ((utt_log_f0 - f0_median) / f0_std) / 4.0
+def quantize_f0_norm(y, f0_median, f0_std, fs: int, win_length: int, norm_mode: str ='norm'):
+    desired_num_frames = int(y.shape[-1] / 1024)
+    utt_log_f0, f0 = extract_utterance_log_f0(y, fs, win_length)
+    utt_log_f0 = utt_log_f0[~torch.isnan(utt_log_f0)]
+    
+    if utt_log_f0.nelement() == 0:
+        utt_log_f0 = torch.zeros(128).to(y)
+        
+    utt_log_f0 = F.interpolate(utt_log_f0.unsqueeze(0).unsqueeze(0), size=desired_num_frames, mode='linear')[0, 0, :]
+    if norm_mode == 'abs':
+        log_f0_norm = (utt_log_f0 - torch.log(torch.tensor([40]).to(y))) / (torch.log(torch.tensor([400]).to(y) - torch.log(torch.tensor([40]).to(y))))
+    else:
+        log_f0_norm = ((utt_log_f0 - f0_median) / f0_std) / 4.0
     return log_f0_norm, f0
 
-def get_f0_norm(y, f0_median, f0_std, fs: int, win_length: int, hop_length: int, num_f0_bins: int=256):
-    log_f0_norm, f0 = quantize_f0_norm(y, f0_median, f0_std, fs, win_length, hop_length)
+def get_f0_norm(y, f0_median, f0_std, fs: int, win_length: int, num_f0_bins: int=256):
+    log_f0_norm, f0 = quantize_f0_norm(y, f0_median, f0_std, fs, win_length)
     log_f0_norm += 0.5
-    #log_f0_norm = torch.linspace(1, 0, log_f0_norm.shape[-1]).unsqueeze(0)
     bins = torch.linspace(0, 1, num_f0_bins+1).to(y)
     f0_one_hot_idxs = torch.bucketize(log_f0_norm, bins, right=True) - 1
     f0_one_hot = one_hot(f0_one_hot_idxs, num_f0_bins+1)
+    return f0_one_hot, log_f0_norm
 
-    return f0_one_hot, log_f0_norm, f0
-
-def extract_f0_median_std(wav, fs: int, win_length: int, hop_length: int):
-    log_f0_vals, _ = extract_utterance_log_f0(wav, fs, win_length, hop_length)
+def extract_f0_median_std(wav, fs: int, win_length: int):
+    log_f0_vals, _ = extract_utterance_log_f0(wav, fs, win_length)
     log_f0_vals = log_f0_vals[~torch.isnan(log_f0_vals)]
-
     log_f0_median = torch.median(log_f0_vals)
     log_f0_std = torch.std(log_f0_vals)
-
     return log_f0_median, log_f0_std
 
 def calculate_stats(root_folder):

@@ -171,6 +171,8 @@ class RAVE(pl.LightningModule):
         else:
             print("loaded my speaker embedding")
 
+        self.speaker_encoder.eval()
+
         # .... RAVE LOSS .... #
         #self.discriminator = discriminator()
         # ................... #
@@ -243,7 +245,7 @@ class RAVE(pl.LightningModule):
         
         #gen_p = list(self.encoder.parameters())
         gen_p = list(self.decoder.parameters())
-        gen_p += list(self.speaker_encoder.parameters())
+        #gen_p += list(self.speaker_encoder.parameters())
         
         dis_p = list(self.discriminator.parameters())
         dis_p += list(self.new_discriminator.parameters())
@@ -307,7 +309,7 @@ class RAVE(pl.LightningModule):
         ids = batch[2]
         medians = torch.tensor([global_speaker_dict[id]['mean'] for id in ids]).unsqueeze(1).to(x)
         stds = torch.tensor([global_speaker_dict[id]['std'] for id in ids]).unsqueeze(1).to(x)
-        f0_norm, log_f0_norm = get_f0_norm(batch[0], medians, stds, 44100, 1024, 1024)
+        f0_norm, log_f0_norm = get_f0_norm(batch[0], medians, stds, 44100, 1024)
         f0_norm = torch.permute(f0_norm, (0, 2, 1))
 
         if self.pqmf is not None:
@@ -581,14 +583,13 @@ class RAVE(pl.LightningModule):
         src_f0_median, src_f0_std = extract_f0_median_std(
             x[:, 0, :],
             44100,
-            1024,
             1024
         )
 
         src_f0_median = src_f0_median.unsqueeze(0).repeat(x.shape[0],1)
         src_f0_std = src_f0_std.unsqueeze(0).repeat(x.shape[0],1)
 
-        f0_norm, log_f0_norm, _ = get_f0_norm(x[:, 0, :], src_f0_median, src_f0_std, 44100, 1024, 1024)
+        f0_norm, log_f0_norm = get_f0_norm(x[:, 0, :], src_f0_median, src_f0_std, 44100, 1024)
         f0_norm = torch.permute(f0_norm, (0, 2, 1))
         
         if self.pqmf is not None and self.enable_pqmf_encode:
@@ -621,7 +622,7 @@ class RAVE(pl.LightningModule):
         ids = batch[2]
         medians = torch.tensor([global_speaker_dict[id]['mean'] for id in ids]).unsqueeze(1).to(x)
         stds = torch.tensor([global_speaker_dict[id]['std'] for id in ids]).unsqueeze(1).to(x)
-        f0_norm, log_f0_norm = get_f0_norm(batch[0], medians, stds, 44100, 1024, 1024)
+        f0_norm, log_f0_norm = get_f0_norm(batch[0], medians, stds, 44100, 1024)
         f0_norm = torch.permute(f0_norm, (0, 2, 1))
 
         if self.pqmf is not None:
@@ -676,7 +677,7 @@ class RAVE(pl.LightningModule):
 
         medians = torch.tensor([global_speaker_dict[inp_id]['mean']]).unsqueeze(1).to(x)
         stds = torch.tensor([global_speaker_dict[inp_id]['std']]).unsqueeze(1).to(x)
-        f0_norm, log_f0_norm = get_f0_norm(batch[0][inp_ind].unsqueeze(0), medians, stds, 44100, 1024, 1024)
+        f0_norm, log_f0_norm = get_f0_norm(batch[0][inp_ind].unsqueeze(0), medians, stds, 44100, 1024)
         f0_norm = torch.permute(f0_norm, (0, 2, 1))
 
         if self.pqmf is not None:
