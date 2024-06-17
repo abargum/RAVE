@@ -106,24 +106,25 @@ def extract_utterance_log_f0(y, sr: int, frame_len_samples: int, voiced_prob_cut
     log_f0 = torch.log(f0)
     return log_f0, f0
 
-def quantize_f0_norm(y, f0_median, f0_std, fs: int, win_length: int, norm_mode: str ='norm'):
+def quantize_f0_norm(y, f0_median, f0_std, fs: int, win_length: int, norm_mode: str ='abs'):
     desired_num_frames = int(y.shape[-1] / 1024)
     utt_log_f0, f0 = extract_utterance_log_f0(y, fs, win_length)
-    utt_log_f0 = utt_log_f0[~torch.isnan(utt_log_f0)]
+    #utt_log_f0 = utt_log_f0[~torch.isnan(utt_log_f0)]
     
-    if utt_log_f0.nelement() == 0:
-        utt_log_f0 = torch.zeros(128).to(y)
+    #if utt_log_f0.nelement() == 0:
+    #    utt_log_f0 = torch.zeros(128).to(y)
         
-    utt_log_f0 = F.interpolate(utt_log_f0.unsqueeze(0).unsqueeze(0), size=desired_num_frames, mode='linear')[0, 0, :]
+    #utt_log_f0 = F.interpolate(utt_log_f0.unsqueeze(0).unsqueeze(0), size=desired_num_frames, mode='linear')[0, 0, :]
     if norm_mode == 'abs':
         log_f0_norm = (utt_log_f0 - torch.log(torch.tensor([40]).to(y))) / (torch.log(torch.tensor([400]).to(y) - torch.log(torch.tensor([40]).to(y))))
     else:
         log_f0_norm = ((utt_log_f0 - f0_median) / f0_std) / 4.0
     return log_f0_norm, f0
 
-def get_f0_norm(y, f0_median, f0_std, fs: int, win_length: int, num_f0_bins: int=256):
+def get_f0_norm(y, f0_median, f0_std, fs: int, win_length: int, mult: float=1.0, scale: float=0.0, num_f0_bins: int=256):
     log_f0_norm, f0 = quantize_f0_norm(y, f0_median, f0_std, fs, win_length)
     log_f0_norm += 0.5
+    log_f0_norm = log_f0_norm * mult + scale
     bins = torch.linspace(0, 1, num_f0_bins+1).to(y)
     f0_one_hot_idxs = torch.bucketize(log_f0_norm, bins, right=True) - 1
     f0_one_hot = one_hot(f0_one_hot_idxs, num_f0_bins+1)

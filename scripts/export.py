@@ -349,14 +349,13 @@ class ScriptedRAVE(nn_tilde.Module):
         src_f0_median, src_f0_std = extract_f0_median_std(
             x_in,
             44100,
-            1024,
             1024
         )
 
         src_f0_median = src_f0_median.unsqueeze(0).repeat(x.shape[0], 1)
         src_f0_std = src_f0_std.unsqueeze(0).repeat(x.shape[0], 1)
         
-        f0_norm, log_f0_norm = get_f0_norm(x_in, src_f0_median, src_f0_std, 44100, 1024, 1024)
+        f0_norm, log_f0_norm = get_f0_norm(x_in, src_f0_median, src_f0_std, 44100, 1024)
         f0_norm = torch.permute(f0_norm, (0, 2, 1))
         
         x_in = x_in.unsqueeze(1)
