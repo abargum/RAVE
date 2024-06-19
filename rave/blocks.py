@@ -1,5 +1,5 @@
 from functools import partial
-from typing import Callable, Optional, Sequence, Union
+from typing import Callable, Optional, Sequence, Union, Tuple, List
 
 import cached_conv as cc
 import gin
@@ -12,6 +12,7 @@ from torchaudio.transforms import Spectrogram
 from .core import amp_to_impulse_response, fft_convolve, mod_sigmoid
 
 import torch.nn.utils.weight_norm as wn
+import torch.nn.functional as F
 
 @gin.configurable
 def normalization(module: nn.Module, mode: str = 'identity'):
@@ -689,11 +690,8 @@ class GeneratorV2(nn.Module):
         self.amplitude_modulation = amplitude_modulation
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        for layer in self.net:
-            x = layer(x)
-            print(x.shape)
-        
-        #x = self.net(x)
+    
+        x = self.net(x)
 
         noise = 0.
 
@@ -1245,32 +1243,43 @@ class GeneratorV2Pitch(nn.Module):
         """
 
         ex_down1 = self.ex_down1(ex)
+        print(ex_down1.shape)
         ex_conv1 = self.c_conv1(ex_down1)
 
         ex_down2 = self.ex_down2(ex_down1)
+        print(ex_down2.shape)
         ex_conv2 = self.c_conv2(ex_down2)
         
         ex_down3 = self.ex_down3(ex_down2)
+        print(ex_down3.shape)
         ex_conv3 = self.c_conv3(ex_down3)
 
         ex_down4 = self.ex_down4(ex_down3)
+        print(ex_down4.shape)
         ex_conv4 = self.c_conv4(ex_down4)
         
         index = 0
+
+        print("INPUT:", x.shape)
         
         for i, layer in enumerate(self.net):
             if i % 5 != 0 or i == 0:
                 x = layer(x)
+                print(i, x.shape)
             elif i == 5:
+                print(i, layer(x).shape, ex_conv4.shape)
                 x = self.film1(layer(x), ex_conv4)
                 index += 1
             elif i == 10:
+                print(i, layer(x).shape, ex_conv3.shape)
                 x = self.film2(layer(x), ex_conv3)
                 index += 1
             elif i == 15:
+                print(i, layer(x).shape, ex_conv2.shape)
                 x = self.film3(layer(x), ex_conv2)
                 index += 1
             elif i == 20:
+                print(i, layer(x).shape, ex_conv1.shape)
                 x = self.film4(layer(x), ex_conv1)
                 index += 1
 
@@ -1291,3 +1300,384 @@ class GeneratorV2Pitch(nn.Module):
 
     def set_warmed_up(self, state: bool):
         pass
+
+
+
+# ---------------
+class ResBlock(nn.Module):
+    """Residual block,"""
+
+    def __init__(self, in_channels: int, out_channels: int, kernels: int):
+        """Initializer.
+        Args:
+            in_channels: size of the input channels.
+            out_channels: size of the output channels.
+            kernels: size of the convolutional kernels.
+        """
+        super().__init__()
+        self.branch = nn.Sequential(
+            nn.BatchNorm1d(in_channels),
+            nn.GELU(),
+            nn.Conv1d(
+                in_channels, out_channels, kernels, padding=kernels // 2
+            ),
+            nn.BatchNorm1d(out_channels),
+            nn.GELU(),
+            nn.Conv1d(
+                out_channels, out_channels, kernels, padding=kernels // 2
+            ),
+        )
+
+        self.shortcut = nn.Conv1d(in_channels, out_channels, 1)
+
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        """Transform the inputs.
+        Args:
+            inputs: [torch.float32; [B, in_channels, F, N]], input channels.
+        Returns:
+            [torch.float32; [B, out_channels, F // 2, N]], output channels.
+        """
+        # [B, out_channels, F, N]
+        outputs = self.branch(inputs)
+        # [B, out_channels, F, N]
+        shortcut = self.shortcut(inputs)
+        # [B, out_channels, F // 2, N]
+        return F.avg_pool1d(outputs + shortcut, 2)
+
+
+def exponential_sigmoid(x: torch.Tensor) -> torch.Tensor:
+    """Exponential sigmoid.
+    Args:
+        x: [torch.float32; [...]], input tensors.
+    Returns:
+        sigmoid outputs.
+    """
+    return 2.0 * torch.sigmoid(x) ** np.log(10) + 1e-7
+
+
+class PitchEncoder(nn.Module):
+    """Pitch-encoder."""
+
+    freq: int
+    """Number of frequency bins."""
+    min_pitch: float
+    """The minimum predicted pitch."""
+    max_pitch: float
+    """The maximum predicted pitch."""
+    prekernels: int
+    """Size of the first convolutional kernels."""
+    kernels: int
+    """Size of the frequency-convolution kernels."""
+    channels: int
+    """Size of the channels."""
+    blocks: int
+    """Number of residual blocks."""
+    gru_dim: int
+    """Size of the GRU hidden states."""
+    hidden_channels: int
+    """Size of the hidden channels."""
+    f0_bins: int
+    """Size of the output f0-bins."""
+    f0_activation: str
+    """F0 activation function."""
+
+    def __init__(
+        self,
+        freq: int,
+        min_pitch: float,
+        max_pitch: float,
+        prekernels: int,
+        kernels: int,
+        channels: int,
+        blocks: int,
+        gru_dim: int,
+        hidden_channels: int,
+        f0_bins: int,
+        f0_activation: str,
+    ):
+        """Initializer.
+        Args:
+            freq: Number of frequency bins.
+            min_pitch: The minimum predicted pitch.
+            max_pitch: The maximum predicted pitch.
+            prekernels: Size of the first convolutional kernels.
+            kernels: Size of the frequency-convolution kernels.
+            channels: Size of the channels.
+            blocks: Number of residual blocks.
+            gru_dim: Size of the GRU hidden states.
+            hidden_channels: Size of the hidden channels.
+            f0_bins: Size of the output f0-bins.
+            f0_activation: f0 activation function.
+        """
+        super().__init__()
+
+        self.freq = freq
+        self.min_pitch = min_pitch
+        self.max_pitch = max_pitch
+        self.prekernels = prekernels
+        self.kernels = kernels
+        self.channels = channels
+        self.blocks = blocks
+        self.gru_dim = gru_dim
+        self.hidden_channels = hidden_channels
+        self.f0_bins = f0_bins
+        self.f0_activation = f0_activation
+
+        assert f0_activation in ["softmax", "sigmoid", "exp_sigmoid"]
+
+        # prekernels=7
+        self.preconv = nn.Conv1d(
+            128, channels, prekernels, padding=prekernels // 2
+        )
+        # channels=128, kernels=3, blocks=2
+        self.resblock = nn.Sequential(
+            *[ResBlock(channels, channels, kernels) for _ in range(blocks)]
+        )
+        # unknown `gru`
+        self.gru = nn.GRU(
+            freq // (2 * blocks),
+            gru_dim,
+            batch_first=True,
+            bidirectional=True,
+        )
+        # unknown `hidden_channels`
+        # f0_bins=64
+        self.proj = nn.Sequential(
+            nn.Linear(gru_dim * 2, hidden_channels * 2),
+            nn.ReLU(),
+            nn.Linear(hidden_channels * 2, f0_bins + 2),
+        )
+
+        self.register_buffer(
+            "pitch_bins",
+            # linear space in log-scale
+            torch.linspace(
+                np.log(self.min_pitch),
+                np.log(self.max_pitch),
+                self.f0_bins,
+            ).exp(),
+        )
+
+    def forward(
+        self, cqt_slice: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Compute the pitch from inputs.
+        Args:
+            cqt_slice: [torch.float32; [B, F, N]]
+                The input tensor. A frequency-axis slice of a Constant-Q Transform.
+        Returns:
+            pitch: [torch.float32; [B, N]], predicted pitch, based on frequency bins.
+            f0_logits: [torch.float32; [B, N, f0_bins]], predicted f0 activation weights,
+                based on the pitch bins.
+            p_amp, ap_amp: [torch.float32; [B, N]], amplitude values.
+        """
+        # B, _, N
+        batch_size, _, timesteps = cqt_slice.shape
+        # [B, C, F, N]
+        cqt_slice = cqt_slice.permute(0, 2, 1)
+        x = self.preconv(cqt_slice)
+        # [B, C F // 4, N]
+        x = self.resblock(x)
+        # [B, N, C x F // 4]
+        #x = x.permute(0, 3, 1, 2).reshape(batch_size, timesteps, -1)
+        #x = x.permute(0, 2, 1)
+        # [B, N, G x 2]
+        x, _ = self.gru(x)
+        # [B, N, f0_bins], [B, N, 1], [B, N, 1]
+        f0_weights, p_amp, ap_amp = torch.split(
+            self.proj(x), [self.f0_bins, 1, 1], dim=-1
+        )
+
+        # potentially apply activation function
+        if self.f0_activation == "softmax":
+            f0_weights = torch.softmax(f0_weights, dim=-1)
+        elif self.f0_activation == "sigmoid":
+            f0_weights = torch.sigmoid(f0_weights) / torch.sigmoid(f0_weights).sum(
+                dim=-1, keepdim=True
+            )
+        elif self.f0_activation == "exp_sigmoid":
+            f0_weights = exponential_sigmoid(f0_weights) / exponential_sigmoid(
+                f0_weights
+            ).sum(dim=-1, keepdim=True)
+
+        # [B, N]
+        pitch = (f0_weights * self.pitch_bins).sum(dim=-1)
+
+        return (
+            pitch,
+            f0_weights,
+            exponential_sigmoid(p_amp).squeeze(dim=-1),
+            exponential_sigmoid(ap_amp).squeeze(dim=-1),
+        )
+
+class ConvGLU(nn.Module):
+    """Dropout - Conv1d - GLU and conditional layer normalization."""
+
+    def __init__(
+        self,
+        channels: int,
+        kernels: int,
+        dilations: int,
+        dropout: float,
+        conditionning_channels: Optional[int] = None,
+    ):
+        """Initializer.
+        Args:
+            channels: size of the input channels.
+            kernels: size of the convolutional kernels.
+            dilations: dilation rate of the convolution.
+            dropout: dropout rate.
+            conditionning_channels: size of the condition channels, if provided.
+        """
+        super().__init__()
+        self.conv = nn.Sequential(
+            nn.Dropout(dropout),
+            nn.Conv1d(
+                channels,
+                channels * 2,
+                kernels,
+                dilation=dilations,
+                padding=(kernels - 1) * dilations // 2,
+            ),
+            nn.GLU(dim=1),
+        )
+
+        self.conditionning_channels = conditionning_channels
+        if self.conditionning_channels is not None:
+            self.cond = nn.Conv1d(self.conditionning_channels, channels * 2, 1)
+
+    def forward(
+        self, inputs: torch.Tensor, cond: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        """Transform the inputs with given conditions.
+        Args:
+            inputs: [torch.float32; [B, channels, T]], input channels.
+            cond: [torch.float32; [B, cond, T]], if provided.
+        Returns:
+            [torch.float32; [B, channels, T]], transformed.
+        """
+        # [B, channels, T]
+        x = inputs + self.conv(inputs)
+        if cond is not None:
+            assert self.cond is not None, "condition module does not exists"
+            # [B, channels, T]
+            x = F.instance_norm(x, use_input_stats=True)
+            # [B, channels, T]
+            weight, bias = self.cond(cond).chunk(2, dim=1)
+            # [B, channels, T]
+            x = x * weight + bias
+        return x
+
+class CondSequential(nn.Module):
+    """Sequential pass with conditional inputs."""
+
+    def __init__(self, modules: Sequence[nn.Module]):
+        """Initializer.
+        Args:
+            modules: list of torch modules.
+        """
+        super().__init__()
+        self.lists = nn.ModuleList(modules)
+
+    # def forward(self, inputs: torch.Tensor, *args, **kwargs) -> torch.Tensor:
+    def forward(
+        self, inputs: torch.Tensor, cond: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        """Pass the inputs to modules.
+        Args:
+            inputs: arbitary input tensors.
+            args, kwargs: positional, keyword arguments.
+        Returns:
+            output tensor.
+        """
+        x = inputs
+        for module in self.lists:
+            # x = module.forward(x, *args, **kwargs)
+            x = module.forward(x, cond)
+        return x
+
+
+class FrameLevelSynthesizer(nn.Module):
+    """Frame-level synthesizer."""
+
+    def __init__(
+        self,
+        in_channels: int,
+        kernels: int,
+        dilations: List[int],
+        blocks: int,
+        leak: float,
+        dropout_rate: float,
+        timbre_embedding_channels: Optional[int],
+    ):
+        """Initializer.
+        Args:
+            in_channels: The size of the input channels.
+            kernels: The size of the convolutional kernels.
+            dilations: The dilation rates.
+            blocks: The number of the ConvGLU blocks after dilated ConvGLU.
+            leak: The negative slope of the leaky relu.
+            dropout_rate: The dropout rate.
+            timbre_embedding_channels: The size of the time-varying timbre embeddings.
+        """
+        super().__init__()
+
+        self.in_channels = in_channels
+        self.timbre_embedding_channels = timbre_embedding_channels
+        self.kernels = kernels
+        self.dilations = dilations
+        self.blocks = blocks
+        self.leak = leak
+        self.dropout_rate = dropout_rate
+
+        # channels=1024
+        # unknown `leak`, `dropout`
+        self.preconv = nn.Sequential(
+            nn.Conv1d(in_channels, in_channels, 1),
+            nn.LeakyReLU(leak),
+            nn.Dropout(dropout_rate),
+        )
+        # kernels=3, dilations=[1, 3, 9, 27, 1, 3, 9, 27], blocks=2
+        self.convglus = CondSequential(
+            [
+                ConvGLU(
+                    in_channels,
+                    kernels,
+                    dilation,
+                    dropout_rate,
+                    conditionning_channels=timbre_embedding_channels,
+                )
+                for dilation in dilations
+            ]
+            + [
+                ConvGLU(
+                    in_channels,
+                    1,
+                    1,
+                    dropout_rate,
+                    conditionning_channels=timbre_embedding_channels,
+                )
+                for _ in range(blocks)
+            ]
+        )
+
+        self.proj = nn.Conv1d(in_channels, in_channels, 1)
+
+    def forward(
+        self, inputs: torch.Tensor, timbre: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        """Synthesize in frame-level.
+        Args:
+            inputs [torch.float32; [B, channels, T]]:
+                Input features.
+            timbre [torch.float32; [B, embed, T]], Optional:
+                Time-varying timbre embeddings.
+        Returns;
+            [torch.float32; [B, channels, T]], outputs.
+        """
+        # [B, channels, T]
+        x: torch.Tensor = self.preconv(inputs)
+        # [B, channels, T]
+        x = self.convglus(x, timbre)
+        # [B, channels, T]
+        return self.proj(x)

@@ -84,7 +84,7 @@ class STFTLoss(torch.nn.Module):
         self.fft_size = fft_size
         self.shift_size = shift_size
         self.win_length = win_length
-        self.window = getattr(torch, window)(win_length).to('cuda:1')
+        self.window = getattr(torch, window)(win_length).to('cuda:2')
         self.spectral_convergence_loss = SpectralConvergenceLoss()
         self.log_stft_magnitude_loss = LogSTFTMagnitudeLoss()
 
