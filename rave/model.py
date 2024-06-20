@@ -23,7 +23,7 @@ from .stft_loss import MultiResolutionSTFTLoss
 from .blocks import StackDiscriminators, PitchEncoder, FrameLevelSynthesizer
 from .core import load_speaker_statedict
 
-from .excitation import ExcitationModule, Synthesizer
+from .excitation import ExcitationModule, Synthesizer, get_pitch
 from .transform import ConstantQTransform
 from .crepe import crepe_pitch_estimation
 from .wavenet import WaveNet
@@ -345,7 +345,7 @@ class RAVE(pl.LightningModule):
         enc_p += list(self.ce_projection.parameters())
         
         #gen_p = list(self.encoder.parameters())
-        gen_p = list(self.decoder.parameters())
+        gen_p = list(self.frame_synth.parameters())
         gen_p += list(self.wavenet.parameters())
         #gen_p += list(self.speaker_encoder.parameters())
         #gen_p += list(self.pitch_encoder.parameters())
@@ -403,7 +403,8 @@ class RAVE(pl.LightningModule):
         #ex = self.excitation_module(pitch, p_amp, ap_amp)
 
         #pitch, _ = get_pitch(batch[0], 1024)
-        ex = self.excitation_module(batch[0])
+        pitch = get_pitch(batch[0], 1024)
+        ex = self.excitation_module(batch[0], pitch.unsqueeze(-1))
 
         x_resampled = resample(batch[0], self.sr, 16000)
         target_units = torch.zeros(x_resampled.shape[0], 148)
@@ -450,10 +451,11 @@ class RAVE(pl.LightningModule):
 
         p.tick('encode')
 
-        z = torch.cat((z_pre_reg.detach(), emb), dim=1)
+        #z = torch.cat((z_pre_reg.detach(), emb), dim=1)
 
         # DECODE LATENT
-        y_multiband = self.decoder(z)
+        #y_multiband = self.decoder(z)
+        y_multiband = self.frame_synth(z_pre_reg.detach(), emb)
         interp = torch.nn.functional.interpolate(
             y_multiband, size=ex.shape[-1], mode="linear"
         )
@@ -736,9 +738,8 @@ class RAVE(pl.LightningModule):
         #pitch, f0, p_amp, ap_amp = self.pitch_encoder(cqt[:, :160])
         #ex = self.excitation_module(pitch, p_amp, ap_amp)
 
-        #pitch, pitch_stats = get_pitch(batch[0], 1024)
-        #print(pitch.shape)
-        ex = self.excitation_module(batch[0], 0.0)
+        pitch = get_pitch(batch[0], 1024)
+        ex = self.excitation_module(batch[0], pitch.unsqueeze(-1))
 
         input_ex = ex
         #print(input_ex.shape)
@@ -766,10 +767,12 @@ class RAVE(pl.LightningModule):
             emb = self.speaker_encoder(x_multiband).unsqueeze(2)
 
         emb = emb.repeat(1, 1, z.shape[-1])
-        z = torch.cat((z.detach(), emb), dim=1)
+        #z = torch.cat((z.detach(), emb), dim=1)
         
         #z = self.encoder.reparametrize(z)[0]
-        y = self.decoder(z)
+        #y = self.decoder(z)
+
+        y = self.frame_synth(z.detach(), emb)
 
         interp = torch.nn.functional.interpolate(
             y, size=ex.shape[-1], mode="linear"
@@ -816,7 +819,25 @@ class RAVE(pl.LightningModule):
         #source_pitch = (standardized_source_pitch * pitch_stats_t.std() + pitch_stats_t.mean())
         
         #ex = self.excitation_module(source_pitch, p_amp_s, ap_amp_s)
-        ex = self.excitation_module(inp)
+        pitch_inp = get_pitch(inp, 1024)
+        pitch_tar = get_pitch(tar, 1024)
+        
+        pitch_stat = pitch_inp
+        pitch_stat[pitch_stat == 0] = float('nan')
+        pitch_stat = pitch_stat[~torch.isnan(pitch_stat)]
+        mean_inp = torch.mean(pitch_stat)
+        std_inp = torch.std(pitch_stat)
+
+        pitch_stat = pitch_tar
+        pitch_stat[pitch_stat == 0] = float('nan')
+        pitch_stat = pitch_stat[~torch.isnan(pitch_stat)]
+        mean_tar = torch.mean(pitch_stat)
+        std_tar = torch.std(pitch_stat)
+
+        standardized_source_pitch = (pitch_inp - mean_inp) / std_inp
+        source_pitch = (standardized_source_pitch * std_tar + mean_tar)
+        source_pitch[source_pitch == float('nan')] = 0
+        ex = self.excitation_module(inp, source_pitch.unsqueeze(-1))
 
         if self.pqmf is not None:
             inp_multiband = self.pqmf(inp.unsqueeze(1))
@@ -830,9 +851,10 @@ class RAVE(pl.LightningModule):
             tar_emb = self.speaker_encoder(tar_multiband).unsqueeze(2)
 
         tar_emb = tar_emb.repeat(1, 1, z.shape[-1])
-        z = torch.cat((z.detach(), tar_emb), dim=1)
+        #z = torch.cat((z.detach(), tar_emb), dim=1)
 
-        y_conv = self.decoder(z)
+        #y_conv = self.decoder(z)
+        y_conv = self.frame_synth(z.detach(), tar_emb)
         interp = torch.nn.functional.interpolate(
             y_conv, size=ex.shape[-1], mode="linear"
         )

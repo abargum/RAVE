@@ -4,6 +4,13 @@ from typing import Optional, Tuple
 import math
 import torch.nn as nn
 
+def get_pitch(x, encoding_ratio: int = 1024, fs: int = 44100, pitch_min: float = 70.0):
+    desired_num_frames = x.shape[-1] / encoding_ratio
+    tau_max = int(fs / pitch_min)
+    frame_length = 2 * tau_max
+    frame_stride = (x.shape[-1] - frame_length) / (desired_num_frames - 1) / fs
+    return estimate(x, sample_rate=fs, pitch_min=pitch_min, pitch_max=400.0, frame_stride=frame_stride)
+
 # ------ FROM TORCH YIN --------
 def estimate(
     signal,
@@ -95,11 +102,10 @@ class ExcitationModule(torch.nn.Module):
         self.ratio = torch.nn.Parameter(torch.tensor([1.0]).float(), requires_grad=False)
         self.n_harmonics = len(self.amplitudes)
         
-    def forward(self, audio, mult, initial_phase: Optional[torch.Tensor]=None):
+    def forward(self, audio, pitch, initial_phase: Optional[torch.Tensor]=None):
 
-        pitch = self.get_pitch(audio, self.encoding_ratio).unsqueeze(-1)
+        #pitch = get_pitch(audio, self.encoding_ratio).unsqueeze(-1)
         #semitones = torch.ones(pitch.shape) * semitones
-        pitch = pitch * mult
         pitch = self.upsample(pitch, self.encoding_ratio)
 
         if initial_phase is None:
@@ -160,13 +166,6 @@ class ExcitationModule(torch.nn.Module):
         rms_val = (rms_in + eps) / (rms_ex + eps)
         rms_val[rms_val < threshold] = 0
         return rms_val.squeeze(-1)
-
-    def get_pitch(self, x, encoding_ratio: int = 1024, fs: int = 44100, pitch_min: float = 70.0):
-        desired_num_frames = x.shape[-1] / encoding_ratio
-        tau_max = int(fs / pitch_min)
-        frame_length = 2 * tau_max
-        frame_stride = (x.shape[-1] - frame_length) / (desired_num_frames - 1) / fs
-        return estimate(x, sample_rate=fs, pitch_min=pitch_min, pitch_max=400.0, frame_stride=frame_stride)
 
 # ----------------------------------
 
