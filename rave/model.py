@@ -20,7 +20,7 @@ import rave.core
 from . import blocks
 from .my_discriminator import NewDiscriminator
 from .stft_loss import MultiResolutionSTFTLoss
-from .blocks import StackDiscriminators, PitchEncoder
+from .blocks import StackDiscriminators, PitchEncoder, FrameLevelSynthesizer
 from .core import load_speaker_statedict
 
 from .excitation import ExcitationModule, Synthesizer
@@ -337,7 +337,8 @@ class RAVE(pl.LightningModule):
         #self.cqt_transform = ConstantQTransform(1024, 32.7, 190, 24, 44100)
         #self.p_loss = RelativePitchDifferenceLoss(15, -12, 12, 160, 0.125, 0.5)
         #self.p_loss = PitchSupervisionLoss(44100, 1024)
-        self.wavenet = WaveNet(64, 16, 3, 2, 10, 3)
+        self.wavenet = WaveNet(64, 64, 3, 2, 10, 3)
+        self.frame_synth = FrameLevelSynthesizer(64, 3, [1, 3, 9, 27, 1, 3, 9, 27], 2, 0.01, 0.1, 256)
 
     def configure_optimizers(self):
         enc_p = list(self.encoder.parameters())
@@ -700,19 +701,29 @@ class RAVE(pl.LightningModule):
 
         emb = self.speaker_encoder(x).unsqueeze(-1)
         emb = emb.repeat(z.shape[0], 1, z.shape[-1])
+
+        frames = self.frame_synth(z, emb)
         
-        z = torch.cat((z, emb), dim=1)
-        return z
+        #z = torch.cat((z, emb), dim=1)
+        return frames
 
     def decode(self, z, x):
 
-        ex = self.excitation_module(x.squeeze(1), torch.ones(1)).unsqueeze(1)
 
-        ex_multiband = self.pqmf(ex)
+        #ex = self.excitation_module(x.squeeze(1), torch.ones(1)).unsqueeze(1)
+        ex = self.excitation_module(x.squeeze(1), 0.0)
+
+        #ex_multiband = self.pqmf(ex)
         
-        y = self.decoder(z, ex_multiband)
-        if self.pqmf is not None and self.enable_pqmf_decode:
-            y = self.pqmf.inverse(y)
+        #y_multiband = self.decoder(z)
+        interp = torch.nn.functional.interpolate(
+            z, size=ex.shape[-1], mode="linear"
+        )
+
+        y = self.wavenet(ex, interp).unsqueeze(1)
+        
+        #if self.pqmf is not None and self.enable_pqmf_decode:
+        #    y = self.pqmf.inverse(y)
         return y
 
     def forward(self, x):
@@ -727,7 +738,7 @@ class RAVE(pl.LightningModule):
 
         #pitch, pitch_stats = get_pitch(batch[0], 1024)
         #print(pitch.shape)
-        ex = self.excitation_module(batch[0])
+        ex = self.excitation_module(batch[0], 0.0)
 
         input_ex = ex
         #print(input_ex.shape)
