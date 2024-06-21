@@ -707,15 +707,16 @@ class RAVE(pl.LightningModule):
         frames = self.frame_synth(z, emb)
         
         #z = torch.cat((z, emb), dim=1)
-        return frames
+        return frames, emb
 
-    def decode(self, z, x):
+    def decode(self, x, z, emb):
 
-
+        pitch = get_pitch(x.squeeze(1), 1024)
         #ex = self.excitation_module(x.squeeze(1), torch.ones(1)).unsqueeze(1)
-        ex = self.excitation_module(x.squeeze(1), 0.0)
+        ex = self.excitation_module(x.squeeze(1), pitch.unsqueeze(-1))
 
         #ex_multiband = self.pqmf(ex)
+        y = self.frame_synth(z, emb)
         
         #y_multiband = self.decoder(z)
         interp = torch.nn.functional.interpolate(
@@ -729,7 +730,8 @@ class RAVE(pl.LightningModule):
         return y
 
     def forward(self, x):
-        return self.decode(self.encode(x), x)
+        z, emb = self.encode(x)
+        return self.decode(x, z, emb)
 
     def validation_step(self, batch, batch_idx):
 
