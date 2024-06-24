@@ -22,7 +22,7 @@ RATIOS = [4, 4, 2, 2]
 CAPACITY = 64
 NOISE_AUGMENTATION = 0
 SPEAKER_EMB_SIZE = 256
-PITCH_EMB_SIZE = 257
+PITCH_EMB_SIZE = 1
 
 core.AudioDistanceV1.log_epsilon = 1e-7
 
