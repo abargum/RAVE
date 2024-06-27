@@ -3,7 +3,7 @@ import logging
 import math
 import os
 import subprocess
-from random import random
+from random import random, randint
 from typing import Dict, Iterable, Optional, Sequence
 
 import gin
@@ -18,10 +18,27 @@ from tqdm import tqdm
 from udls import AudioExample as AudioExampleWrapper
 from udls import transforms
 from udls.generated import AudioExample
+from abc import ABC, abstractmethod
+import pathlib
+import gin
 
 import wandb
 from torchaudio.functional import resample
 from .perturbation import wav_to_Sound, formant_and_pitch_shift, parametric_equalizer
+from .core import fast_load, decoded_audio_duration
+
+class Augmentation(ABC):
+    @abstractmethod
+    def __init__(self):
+        super().__init__()
+        
+    @abstractmethod
+    def __call__(self, audio_data):
+        pass
+
+    @abstractmethod
+    def sample(self, size, audio_length):
+        pass
 
 class Transform(object):
     def __call__(self, x: torch.Tensor):
@@ -42,6 +59,89 @@ class PEQ(Transform):
 
     def __call__(self, x: np.ndarray):
         return parametric_equalizer(x, self.sr)
+
+"""Background noise from:
+https://github.com/MWM-io/nansypp/blob/bbc6e390632bad56d5c0764074390a9f4a23fb86/src/data/preprocessing/augmentation.py"""
+@gin.configurable
+class RandomBackgroundNoise(Augmentation):
+    def __init__(
+        self,
+        sample_rate: int,
+        min_snr_db: int,  
+        max_snr_db: int, 
+        noise_scale: float,
+        length_s: float,
+        noise_dir: str,
+    ) -> None:
+        """
+        Args:
+            sample_rate: sample rate.
+            noise_dir: directory containing noise audio samples
+            min_snr_db: minimum source-to-noise-ratio in decibel used to generate signal scaling audio data
+            max_snr_db: maximum source-to-noise-ratio in decibel used to generate signal scaling audio data
+            noise_scale: noise signal weight
+            augmentation_number: augmentation index used when composing
+            length_s: segment length of audio data from dataset in seconds
+        """
+        self.sample_rate = sample_rate
+        self.min_snr_db = min_snr_db
+        self.max_snr_db = max_snr_db
+        self.noise_scale = noise_scale
+        self.length_s = length_s
+        self.length_f = int(sample_rate * length_s)
+
+        if not os.path.exists(noise_dir):
+            raise IOError(f"Noise directory `{noise_dir}` does not exist")
+        # find all NPY files including in sub-folders:
+        self.noise_files_list = list(pathlib.Path(noise_dir).rglob("*.npy"))
+        if len(self.noise_files_list) == 0:
+            raise IOError(
+                f"No decoded .npy file found in the noise directory `{noise_dir}`"
+            )
+        self.noise_files_dict = {
+            path: int(decoded_audio_duration(path, sample_rate) * sample_rate)
+            for path in tqdm(self.noise_files_list)
+        }
+
+    def __call__(self, audio_data, noises=None):
+        """Add random noise to the audio_data.
+        Args:
+            audio_data: [torch.float32; [B, T]], input tensor.
+        Returns:
+            [torch.float32; [B, T]], generated augmentation.
+        """
+        shape = audio_data.shape
+        if len(audio_data.shape) == 1:
+            audio_data = audio_data.reshape((1, -1))
+        N, audio_length = audio_data.shape
+        if noises is None:
+            noises = self.sample(N, audio_length)
+        noises_to_add = noises[:N, :audio_length]
+        snr_db = randint(self.min_snr_db, self.max_snr_db)
+        snr = math.exp(snr_db / 10)
+        audio_power = np.linalg.norm(audio_data)
+        noise_power = np.linalg.norm(noises_to_add)
+        scale = (snr * noise_power / (audio_power + 1e-6)).reshape(-1, 1)
+        result = (torch.tensor(scale) * torch.tensor(audio_data) + torch.tensor(self.noise_scale) * noises_to_add) / 2
+        result = result.reshape(shape)
+        return result.numpy()
+
+    def sample(self, size, audio_length):
+        file_indices = np.random.choice(len(self.noise_files_list), size, replace=False)
+        return torch.vstack(
+            [
+                fast_load(
+                    self.noise_files_list[file_idx],
+                    audio_length,
+                    np.random.randint(
+                        0,
+                        self.noise_files_dict[self.noise_files_list[file_idx]]
+                        - audio_length,
+                    ),
+                )
+                for file_idx in file_indices
+            ]
+        )
 
 
 def get_derivator_integrator(sr: int):
@@ -116,6 +216,7 @@ class LazyAudioDataset(data.Dataset):
                  db_path: str,
                  n_signal: int,
                  sampling_rate: int,
+                 additive_noise: bool = True,
                  transforms: Optional[transforms.Transform] = None) -> None:
         super().__init__()
         self._db_path = db_path
@@ -127,8 +228,15 @@ class LazyAudioDataset(data.Dataset):
                
         self.formant_pitch = FormantPitchShift(sampling_rate)
         self.peq = PEQ(sampling_rate)
-        self.discrete_units = torch.hub.load("bshall/hubert:main",f"hubert_discrete", trust_repo=True) #.to(torch.device("cuda"))
-
+        self.additive_noise = additive_noise
+        
+        if self.additive_noise:
+            self.noise_module = RandomBackgroundNoise(sample_rate=sampling_rate,
+                                                      min_snr_db=14,
+                                                      max_snr_db=15,
+                                                      noise_scale=0.8,
+                                                      length_s=n_signal)
+        
         self.parse_dataset()
 
     def parse_dataset(self):
@@ -171,8 +279,14 @@ class LazyAudioDataset(data.Dataset):
             
         audio_p = self.formant_pitch(audio)
         audio_p = self.peq(audio_p)
+        
+        if self.additive_noise:
+            noises = self.noise_module.sample(1, self._n_signal)
+            audio_p = self.noise_module(audio_p, noises=noises)
 
-        return (audio, audio_p.astype(np.float32), speaker_id)
+        audio_p = (audio_p / np.max(audio_p)) * 0.8
+
+        return (audio.astype(np.float32), audio_p.astype(np.float32), speaker_id)
 
 
 class HTTPAudioDataset(data.Dataset):

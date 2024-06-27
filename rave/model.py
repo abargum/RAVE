@@ -114,13 +114,11 @@ class CrossEntropyProjection(nn.Module):
         super().__init__()
         self.layer_norm = torch.nn.LayerNorm(128)
         self.proj = nn.Conv1d(64, 100, 1, bias=False)
-        #self.softmax = torch.nn.Softmax(dim=1)
         
     def forward(self, x):
         z_for_CE = self.layer_norm(x)
         z_for_CE = self.proj(z_for_CE)
         z_for_CE = F.interpolate(z_for_CE, 148)
-        #z_for_CE = self.softmax(z_for_CE)
         return z_for_CE
 
 
@@ -305,8 +303,6 @@ class RAVE(pl.LightningModule):
         x = batch[0].unsqueeze(1)
         x_p = batch[1].unsqueeze(1)
 
-        #f0_target_length=(x.shape[-1] // 1024)
-
         ids = batch[2]
         medians = torch.tensor([global_speaker_dict[id]['mean'] for id in ids]).unsqueeze(1).to(x)
         stds = torch.tensor([global_speaker_dict[id]['std'] for id in ids]).unsqueeze(1).to(x)
@@ -314,27 +310,8 @@ class RAVE(pl.LightningModule):
         if self.pitch_estimator == "fcpe":
             f0_norm = get_f0_norm_fcpe(x.squeeze(1), medians, stds, self.sr, 1024)
         else:
-            f0_norm = get_f0_norm(x, medians, stds, self.sr, 1024)
-
-        """
-        f0 = pitch_model.infer(batch[0].unsqueeze(-1),
-                         sr=44100,
-                         decoder_mode='local_argmax',
-                         threshold=0.006,
-                         f0_min=50,
-                         f0_max=550,
-                         interp_uv=False,
-                         output_interp_target_length=f0_target_length)
+            f0_norm, log_f0_norm = get_f0_norm(x, medians, stds, self.sr, 1024)
         
-        f0_stats = f0
-        f0_stats[f0_stats == 0] = float('nan')
-        mean = torch.nanmean(f0_stats, dim=1, keepdim=True)
-        std = self.nanstd(f0_stats, dim=1, keepdim=True)
-        f0_norm = (f0 - mean) / std
-        f0_norm[torch.isnan(f0_norm)] = 0
-        """
-        
-        #f0_norm, log_f0_norm = get_f0_norm(batch[0], medians, stds, 44100, 1024)
         f0_norm = torch.permute(f0_norm, (0, 2, 1))
 
         if self.pqmf is not None:
@@ -643,21 +620,8 @@ class RAVE(pl.LightningModule):
         #dummy = self.pqmf_speaker.inverse(dummy)
         return self.decode(self.encode(x))
 
-    def nanstd(self, o, dim, keepdim=False):
-        result = torch.sqrt(
-                    torch.nanmean(
-                        torch.pow( torch.abs(o-torch.nanmean(o,dim=dim).unsqueeze(dim)),2),
-                        dim=dim
-                    )
-                )
-        if keepdim:
-            result = result.unsqueeze(dim)
-        return result
-
     def validation_step(self, batch, batch_idx):
         x = batch[0].unsqueeze(1)
-        noise = batch[1].unsqueeze(1)
-
         f0_target_length=(x.shape[-1] // 1024)
 
         ids = batch[2]
@@ -667,26 +631,8 @@ class RAVE(pl.LightningModule):
         if self.pitch_estimator == "fcpe":
             f0_norm = get_f0_norm_fcpe(x.squeeze(1), medians, stds, self.sr, 1024)
         else:
-            f0_norm = get_f0_norm(x, medians, stds, self.sr, 1024)
+            f0_norm, log_f0_norm = get_f0_norm(x, medians, stds, self.sr, 1024)
 
-        """
-        f0 = pitch_model.infer(batch[0].unsqueeze(-1),
-                         sr=44100,
-                         decoder_mode='local_argmax',
-                         threshold=0.006,
-                         f0_min=50,
-                         f0_max=550,
-                         interp_uv=False,
-                         output_interp_target_length=f0_target_length)
-        
-        f0_stats = f0
-        f0_stats[f0_stats == 0] = float('nan')
-        mean = torch.nanmean(f0_stats, dim=1, keepdim=True)
-        std = self.nanstd(f0_stats, dim=1, keepdim=True)
-        f0_norm = (f0 - mean) / std
-        f0_norm[torch.isnan(f0_norm)] = 0
-        """
-        #f0_norm, log_f0_norm = get_f0_norm(batch[0], medians, stds, 44100, 1024)
         f0_norm = torch.permute(f0_norm, (0, 2, 1))
 
         if self.pqmf is not None:
@@ -738,50 +684,14 @@ class RAVE(pl.LightningModule):
         inp = batch[0][inp_ind].unsqueeze(0)
         tar = batch[0][tar_ind].unsqueeze(0)
         inp_id = ids[inp_ind]
-
-        """
-        f0_in = pitch_model.infer(inp.unsqueeze(-1),
-                         sr=44100,
-                         decoder_mode='local_argmax',
-                         threshold=0.006,
-                         f0_min=50,
-                         f0_max=550,
-                         interp_uv=False,
-                         output_interp_target_length=f0_target_length)
-
-        f0_tar = pitch_model.infer(tar.unsqueeze(-1),
-                         sr=44100,
-                         decoder_mode='local_argmax',
-                         threshold=0.006,
-                         f0_min=50,
-                         f0_max=550,
-                         interp_uv=False,
-                         output_interp_target_length=f0_target_length)
-
-        f0_stats = f0_in
-        f0_stats[f0_stats == 0] = float('nan')
-        mean_in = torch.nanmean(f0_stats, dim=1, keepdim=True)
-        std_in = self.nanstd(f0_stats, dim=1, keepdim=True)
-
-        f0_stats = f0_tar
-        f0_stats[f0_stats == 0] = float('nan')
-        mean_tar = torch.nanmean(f0_stats, dim=1, keepdim=True)
-        std_tar = self.nanstd(f0_stats, dim=1, keepdim=True)
-
-        standardized_source_pitch = (f0_in - mean_in) / std_in
-        source_pitch = (standardized_source_pitch * std_tar + mean_tar)
-        source_pitch[torch.isnan(source_pitch)] = 0
-        """
         
         medians = torch.tensor([global_speaker_dict[inp_id]['mean']]).unsqueeze(1).to(x)
         stds = torch.tensor([global_speaker_dict[inp_id]['std']]).unsqueeze(1).to(x)
         if self.pitch_estimator == "fcpe":
             f0_norm = get_f0_norm_fcpe(inp, medians, stds, self.sr, 1024)
         else:
-            f0_norm = get_f0_norm(inp, medians, stds, self.sr, 1024)
-        
-        #f0_norm, log_f0_norm = get_f0_norm(batch[0][inp_ind].unsqueeze(0), medians, stds, 44100, 1024)
-        
+            f0_norm, log_f0_norm = get_f0_norm(inp, medians, stds, self.sr, 1024)
+                
         f0_norm = torch.permute(f0_norm, (0, 2, 1))
 
         if self.pqmf is not None:
@@ -801,7 +711,7 @@ class RAVE(pl.LightningModule):
         if self.pqmf is not None:
             outp = self.pqmf.inverse(y_conv)
 
-        return torch.cat([noise, y], -1), mean, torch.cat([inp.unsqueeze(0), tar.unsqueeze(0), outp], -1)
+        return torch.cat([x, y], -1), mean, torch.cat([inp.unsqueeze(0), tar.unsqueeze(0), outp], -1)
 
     def validation_epoch_end(self, out):
 

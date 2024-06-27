@@ -104,7 +104,7 @@ def one_hot(a, num_classes: int):
     return one_hot_batched
 
 def extract_utterance_log_f0(y, sr: int, frame_len_samples: int):
-    f0 = get_pitch(y, frame_len_samples)
+    f0 = extract_utterance_fcpe(y, sr, frame_len_samples)[:, :, 0] #get_pitch(y, frame_len_samples)
     f0[f0 == 0] = float('nan')
     log_f0 = torch.log(f0)
     return log_f0, f0
@@ -143,16 +143,26 @@ def extract_utterance_fcpe(y, sr: int, frame_len_samples: int):
     return f0
 
 def extract_f0_median_std(wav, fs: int, win_length: int):
-    log_f0_vals, _ = extract_utterance_fcpe(wav, fs, win_length)
+    log_f0_vals = extract_utterance_fcpe(wav, fs, win_length)
     log_f0_vals = log_f0_vals[~torch.isnan(log_f0_vals)]
     log_f0_median = torch.median(log_f0_vals)
     log_f0_std = torch.std(log_f0_vals)
     return log_f0_median, log_f0_std
 
-def get_f0_norm_fcpe(y, mean, std, fs: int, win_length: int):
+def get_f0_norm_fcpe(y, mean, std, fs: int, win_length: int, norm_mode="whitening"):
     f0 = extract_utterance_fcpe(y, fs, win_length)
     f0[f0 == 0] = float('nan')
-    f0_norm = (f0 - mean.unsqueeze(-1)) / std.unsqueeze(-1)
+    
+    if norm_mode == "whitening":
+        f0_norm = (f0 - mean.unsqueeze(-1)) / std.unsqueeze(-1)
+    elif norm_mode == "relative_log":
+        f0_norm = ((torch.log(f0) - mean.unsqueeze(-1)) / std.unsqueeze(-1)) / 4.0
+        f0_norm += 0.5
+    elif norm_mode == "absolute_log":
+        f0_norm = (torch.log(f0) - torch.log(torch.tensor([40])).to(y)) / (torch.log(torch.tensor([500])).to(y) - torch.log(torch.tensor([40])).to(y))
+    else:
+        f0_norm = f0
+    
     f0_norm[torch.isnan(f0_norm)] = 0
     return f0_norm
 
@@ -160,9 +170,12 @@ def extract_f0_median_std_fcpe(wav, fs: int, win_length: int):
     f0_stats = extract_utterance_fcpe(wav, fs, win_length)
     f0_stats[f0_stats == 0] = float('nan')
     f0_stats = f0_stats[~torch.isnan(f0_stats)]
-    mean = torch.mean(f0_stats)
+    mean = torch.median(f0_stats)
     std = torch.std(f0_stats)
-    return mean, std
+    log_f0 = torch.log(f0_stats)
+    mean_log = torch.median(log_f0)
+    std_log = torch.std(log_f0)
+    return mean, std, mean_log, std_log
 
 def calculate_stats(root_folder, pitch_estimator):
     stats_dict = {}
@@ -175,6 +188,8 @@ def calculate_stats(root_folder, pitch_estimator):
         if os.path.isdir(subdir_path):
             medians = []
             stds = []
+            medians_log = []
+            stds_log = []
             
             # Iterate over each file in the subfolder
             for filename in os.listdir(subdir_path):
@@ -191,21 +206,31 @@ def calculate_stats(root_folder, pitch_estimator):
                                                                           512,
                                                                           100)
                     else:
-                        src_f0_median, src_f0_std = extract_f0_median_std_fcpe(torch.tensor(audio).unsqueeze(0),
-                                                                          fs,
-                                                                          512)
+                        src_f0_median, src_f0_std, src_f0_median_log, src_f0_std_log = extract_f0_median_std_fcpe(torch.tensor(audio).unsqueeze(0),
+                                                                                                                  fs,
+                                                                                                                  1024)
                     # Add the length to the list
                     if torch.isnan(src_f0_median) or torch.isnan(src_f0_std):
                         break
                     else:
                         medians.append(src_f0_median.detach().cpu().numpy())
                         stds.append(src_f0_std.detach().cpu().numpy())
+                        if pitch_estimator != "yin":
+                            medians_log.append(src_f0_median_log.detach().cpu().numpy())
+                            stds_log.append(src_f0_std_log.detach().cpu().numpy())
             
             # Calculate the mean length of audio files in the current subfolder
             mean_median = float(np.mean(medians))
             mean_std = float(np.mean(stds))
+            if pitch_estimator != "yin":
+                mean_median_log = float(np.mean(medians_log))
+                mean_std_log = float(np.mean(stds_log))
+                
             print("median:", mean_median, "mean_std", mean_std)
-            m_s_dict = {'mean': mean_median, 'std': mean_std}
+            if pitch_estimator != "yin":
+                m_s_dict = {'mean': mean_median, 'std': mean_std, 'mean_log': mean_median_log, 'std_log': mean_std_log}
+            else:
+                m_s_dict = {'mean': mean_median, 'std': mean_std}
                 
             stats_dict[subdir] = m_s_dict
                 

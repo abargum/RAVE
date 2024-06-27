@@ -2,6 +2,7 @@ from __gin__ import dynamic_registration
 
 import rave
 from rave import core
+from rave import dataset
 from rave import pqmf
 from rave import blocks
 from rave import discriminator
@@ -21,8 +22,10 @@ DILATIONS = [
 RATIOS = [4, 4, 2, 2]
 CAPACITY = 64
 NOISE_AUGMENTATION = 0
+
 SPEAKER_EMB_SIZE = 256
 PITCH_EMB_SIZE = 1
+dataset.RandomBackgroundNoise.noise_dir = '/home/jupyter-arbu/RAVE/noise_files/'
 
 core.AudioDistanceV1.log_epsilon = 1e-7
 
@@ -95,6 +98,7 @@ rave.RAVE:
     speaker_encoder = @CombinedRave.SpeakerRAVE
     discriminator = @discriminator.CombineDiscriminators
     valid_signal_crop = True
+    pitch_estimator = 'fcpe'
     num_skipped_features = 1
     decoder = @blocks.GeneratorV2
     update_discriminator_every = 4

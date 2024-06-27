@@ -1,5 +1,30 @@
 ![rave_logo](docs/rave.png)
 
+# Additions
+
+This repository builds on top of the original RAVE framework. It reduces the pipeline to be non-variational and have among other things added:
+
+- RAVE-Centric Speaker Encoder pretrained on Voxceleb
+- HuBERT based knowledge distillation for linguistic teacher guidance
+- Pitch contour conditioning
+- Information Perturbation
+- Random Background Noise Addition
+
+To get started:
+
+Run preprocessing --lazy as normal.
+Create speaker statistics using:
+```bash
+python rave/pitch_utils.py --root_folder <data_dir> --pitch_estimator <pitch_estimator to use (fcpe or yin)>
+```
+Set speaker_stats.json path in model.py
+
+Download the DEMAND noise dataset https://zenodo.org/api/records/1227121/files-archive and run:
+```bash
+python scripts/decode.py -i <input_directory> -o <output_directory> -sr <sample_rate>
+```
+Set noise_dir in v2 config
+
 # RAVE: Realtime Audio Variational autoEncoder
 
 Official implementation of _RAVE: A variational autoencoder for fast and high-quality neural audio synthesis_ ([article link](https://arxiv.org/abs/2111.05011)) by Antoine Caillon and Philippe Esling.
