@@ -25,7 +25,7 @@ NOISE_AUGMENTATION = 0
 
 SPEAKER_EMB_SIZE = 256
 PITCH_EMB_SIZE = 1
-dataset.RandomBackgroundNoise.noise_dir = '/home/jupyter-arbu/RAVE/noise_files/'
+dataset.RandomBackgroundNoise.noise_dir = 'noise_files/'
 
 core.AudioDistanceV1.log_epsilon = 1e-7
 
@@ -99,6 +99,8 @@ rave.RAVE:
     discriminator = @discriminator.CombineDiscriminators
     valid_signal_crop = True
     pitch_estimator = 'fcpe'
+    speaker_encoder_dir = 'rave/pretrained/model000000075.model'
+    speaker_stats_dir = 'rave/pretrained/speaker_stats_fcpe.json'
     num_skipped_features = 1
     decoder = @blocks.GeneratorV2
     update_discriminator_every = 4

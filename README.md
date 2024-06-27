@@ -12,18 +12,22 @@ This repository builds on top of the original RAVE framework. It reduces the pip
 
 To get started:
 
-Run preprocessing --lazy as normal.
+Run preprocessing --lazy as normal (see below).
 Create speaker statistics using:
 ```bash
 python rave/pitch_utils.py --root_folder <data_dir> --pitch_estimator <pitch_estimator to use (fcpe or yin)>
 ```
-Set speaker_stats.json path in model.py
+Set speaker_stats.json path in configs/v2/RAVE
 
 Download the DEMAND noise dataset https://zenodo.org/api/records/1227121/files-archive and run:
 ```bash
 python scripts/decode.py -i <input_directory> -o <output_directory> -sr <sample_rate>
 ```
-Set noise_dir in v2 config
+Set noise_dir in configs/v2/RAVE
+
+Set speaker_encoder_dir in configs/v2/RAVE
+
+TRAIN!
 
 # RAVE: Realtime Audio Variational autoEncoder
 
