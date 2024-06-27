@@ -27,6 +27,8 @@ Set noise_dir in configs/v2/RAVE
 
 Set speaker_encoder_dir in configs/v2/RAVE
 
+Disable additive_noise bool in train_rave.py dataset if desired
+
 TRAIN!
 
 # RAVE: Realtime Audio Variational autoEncoder
