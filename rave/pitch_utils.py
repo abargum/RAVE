@@ -9,7 +9,7 @@ import argparse
 import torch.nn.functional as F
 from torchfcpe import spawn_bundled_infer_model
 
-pitch_model = spawn_bundled_infer_model(device="cuda:2")
+pitch_model = spawn_bundled_infer_model(device="cuda:0")
 
 # ------ FROM TORCH YIN --------
 def estimate(
@@ -87,7 +87,7 @@ def _search(cmdf: torch.Tensor, tau_max: int, threshold: float) -> torch.Tensor:
 
 # ----------------------------------
 
-def get_pitch(x, block_size: int, fs: int=44100, pitch_min: float=70.0, pitch_max: float=400.0):
+def get_pitch(x, block_size: int, fs: int=44100, pitch_min: float=50.0, pitch_max: float=500.0):
     desired_num_frames = x.shape[-1] / block_size
     tau_max = int(fs / pitch_min)
     frame_length = 2 * tau_max
@@ -104,7 +104,7 @@ def one_hot(a, num_classes: int):
     return one_hot_batched
 
 def extract_utterance_log_f0(y, sr: int, frame_len_samples: int):
-    f0 = extract_utterance_fcpe(y, sr, frame_len_samples)[:, :, 0] #get_pitch(y, frame_len_samples)
+    f0 = get_pitch(y, frame_len_samples)
     f0[f0 == 0] = float('nan')
     log_f0 = torch.log(f0)
     return log_f0, f0
@@ -149,8 +149,8 @@ def extract_f0_median_std(wav, fs: int, win_length: int):
     log_f0_std = torch.std(log_f0_vals)
     return log_f0_median, log_f0_std
 
-def get_f0_norm_fcpe(y, mean, std, fs: int, win_length: int, norm_mode="whitening"):
-    f0 = extract_utterance_fcpe(y, fs, win_length)
+def get_f0_norm_fcpe(y, mean, std, fs: int, win_length: int, mult=1.0, norm_mode="whitening"):
+    f0 = extract_utterance_fcpe(y, fs, win_length) * mult
     f0[f0 == 0] = float('nan')
     
     if norm_mode == "whitening":
@@ -176,6 +176,41 @@ def extract_f0_median_std_fcpe(wav, fs: int, win_length: int):
     mean_log = torch.median(log_f0)
     std_log = torch.std(log_f0)
     return mean, std, mean_log, std_log
+
+# ------------
+def extract_utterance_inference(y, sr: int, frame_len_samples: int):
+    f0 = get_pitch(y, frame_len_samples)
+    return f0
+    
+def get_f0_norm_inference(y, mean, std, fs: int, win_length: int, mult: float = 1.0, norm_mode: str ="whitening"):
+    f0 = extract_utterance_inference(y, fs, win_length) * mult
+    f0[f0 == 0] = float('nan')
+    
+    if norm_mode == "whitening":
+        f0_norm = (f0 - mean.unsqueeze(-1)) / std.unsqueeze(-1)
+    elif norm_mode == "relative_log":
+        f0_norm = ((torch.log(f0) - mean.unsqueeze(-1)) / std.unsqueeze(-1)) / 4.0
+        f0_norm += 0.5
+    elif norm_mode == "absolute_log":
+        f0_norm = (torch.log(f0) - torch.log(torch.tensor([40])).to(y)) / (torch.log(torch.tensor([500])).to(y) - torch.log(torch.tensor([40])).to(y))
+    else:
+        f0_norm = f0
+    
+    f0_norm[torch.isnan(f0_norm)] = 0
+    return f0_norm
+
+def extract_f0_median_std_inference(wav, fs: int, win_length: int):
+    f0_stats = extract_utterance_inference(wav, fs, win_length)
+    f0_stats[f0_stats == 0] = float('nan')
+    f0_stats = f0_stats[~torch.isnan(f0_stats)]
+    mean = torch.median(f0_stats)
+    std = torch.std(f0_stats)
+    log_f0 = torch.log(f0_stats)
+    mean_log = torch.median(log_f0)
+    std_log = torch.std(log_f0)
+    return mean, std, mean_log, std_log
+
+# ------------
 
 def calculate_stats(root_folder, pitch_estimator):
     stats_dict = {}

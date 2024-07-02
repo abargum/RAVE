@@ -15,7 +15,9 @@ import torch.nn.functional as F
 import wandb
 import random
 import json
-from .pitch_utils import get_f0_norm, get_f0_norm_fcpe
+from .pitch_utils import get_f0_norm, get_f0_norm_fcpe, extract_f0_median_std_fcpe, extract_f0_median_std
+
+from .nsf import GeneratorNSF
 
 import rave.core
 
@@ -155,7 +157,9 @@ class RAVE(pl.LightningModule):
             self.pqmf = pqmf()
 
         self.encoder = encoder()
-        self.decoder = decoder()
+        #self.decoder = decoder()
+
+        self.decoder = GeneratorNSF(320, 1, [3,7,11], [[1,3,5], [1,3,5], [1,3,5]], [8,4,4,4,2], 512, [16,16,4,4,4], 256, 44100)
 
         self.speaker_encoder = speaker_encoder()
         spk_state, pqmf_state = self.load_speaker_statedict(speaker_encoder_dir)
@@ -191,7 +195,7 @@ class RAVE(pl.LightningModule):
             n_fft = int(math.pow(2, int(math.log2(win_length)) + 1))
             resolutions.append((n_fft, hop_length, win_length))
 
-        self.stft_criterion = MultiResolutionSTFTLoss(torch.device("cuda:2"), resolutions).cuda(2)
+        self.stft_criterion = MultiResolutionSTFTLoss(torch.device("cuda:0"), resolutions).cuda(0)
 
         # ............... #
 
@@ -234,7 +238,7 @@ class RAVE(pl.LightningModule):
         self.pitch_estimator = pitch_estimator
         self.ce_projection = CrossEntropyProjection()
         self.discrete_units = torch.hub.load("bshall/hubert:main",f"hubert_discrete",
-                                             trust_repo=True).to(torch.device("cuda:2"))
+                                             trust_repo=True).to(torch.device("cuda:0"))
         
         with open('/home/jupyter-arbu/RAVE/rave/pretrained/speaker_stats_fcpe.json') as json_file:
             self.global_speaker_dict = json.load(json_file)
@@ -269,7 +273,7 @@ class RAVE(pl.LightningModule):
         return feature_real, feature_fake
 
     def load_speaker_statedict(self, path):
-        loaded_state = torch.load(path, map_location="cuda:%d" % 2)
+        loaded_state = torch.load(path, map_location="cuda:%d" % 0)
         
         newdict = {}
         pqmfdict = {}
@@ -310,11 +314,12 @@ class RAVE(pl.LightningModule):
         stds = torch.tensor([self.global_speaker_dict[id]['std'] for id in ids]).unsqueeze(1).to(x)
 
         if self.pitch_estimator == "fcpe":
-            f0_norm = get_f0_norm_fcpe(x.squeeze(1), medians, stds, self.sr, 1024)
+            f0_norm = get_f0_norm_fcpe(x.squeeze(1), medians, stds, self.sr, 1024, norm_mode="none")
         else:
             f0_norm, log_f0_norm = get_f0_norm(x, medians, stds, self.sr, 1024)
         
-        f0_norm = torch.permute(f0_norm, (0, 2, 1))
+        #f0_norm = torch.permute(f0_norm, (0, 2, 1))
+        f0_norm = f0_norm[:, :, 0]
 
         if self.pqmf is not None:
             x_multiband = self.pqmf(x)
@@ -325,7 +330,7 @@ class RAVE(pl.LightningModule):
         p.tick('decompose')
 
         self.encoder.set_warmed_up(self.warmed_up)
-        self.decoder.set_warmed_up(self.warmed_up)
+        #self.decoder.set_warmed_up(self.warmed_up)
 
         # ENCODE INPUT
         if self.enable_pqmf_encode:
@@ -346,8 +351,8 @@ class RAVE(pl.LightningModule):
         p.tick('encode')
 
         # DECODE LATENT
-        y_multiband = self.decoder(
-            torch.cat((z_pre_reg.detach(), emb, f0_norm), dim=1)
+        y_multiband, nsf_source = self.decoder(
+            torch.cat((z_pre_reg.detach(), emb), dim=1), f0_norm
         )
 
         p.tick('decode')
@@ -375,7 +380,8 @@ class RAVE(pl.LightningModule):
             # ................... #
 
             x = self.pqmf.inverse(x_multiband)
-            y = self.pqmf.inverse(y_multiband)
+            #y = self.pqmf.inverse(y_multiband)
+            y = y_multiband
 
             # .... MY LOSS .... #
             sc_loss, mag_loss = self.stft_criterion(y.squeeze(1), x.squeeze(1))
@@ -583,30 +589,20 @@ class RAVE(pl.LightningModule):
         p.tick('logging')
 
     def encode(self, x):
-        
-        src_f0_median, src_f0_std = extract_f0_median_std(
-            x[:, 0, :],
-            44100,
-            1024
-        )
 
-        src_f0_median = src_f0_median.unsqueeze(0).repeat(x.shape[0],1)
-        src_f0_std = src_f0_std.unsqueeze(0).repeat(x.shape[0],1)
-
-        f0_norm, log_f0_norm = get_f0_norm(x[:, 0, :], src_f0_median, src_f0_std, 44100, 1024)
+        medians, stds, _, _ = extract_f0_median_std_fcpe(x.squeeze(1), self.sr, 1024)
+        f0_norm = get_f0_norm_fcpe(x.squeeze(1), medians, stds, self.sr, 1024, mult=1.0, norm_mode="whitening")
         f0_norm = torch.permute(f0_norm, (0, 2, 1))
-        
+
         if self.pqmf is not None and self.enable_pqmf_encode:
             x = self.pqmf(x)
 
         z = self.encoder(x[:, :6, :])
 
-        f0_norm = torch.rand((z.shape[0], 1, z.shape[-1]))
-
         emb = self.speaker_encoder(x).unsqueeze(-1)
         emb = emb.repeat(z.shape[0], 1, z.shape[-1])
         
-        z = torch.cat((z, emb, f0_norm), dim=1)
+        z = torch.cat((z, emb, f0_norm.to(z)), dim=1)
         #z, = self.encoder.reparametrize(self.encoder(x))[:1]
         return z
 
@@ -618,8 +614,6 @@ class RAVE(pl.LightningModule):
         return y
 
     def forward(self, x):
-        #dummy = self.pqmf_speaker(x)
-        #dummy = self.pqmf_speaker.inverse(dummy)
         return self.decode(self.encode(x))
 
     def validation_step(self, batch, batch_idx):
@@ -631,11 +625,12 @@ class RAVE(pl.LightningModule):
         stds = torch.tensor([self.global_speaker_dict[id]['std'] for id in ids]).unsqueeze(1).to(x)
 
         if self.pitch_estimator == "fcpe":
-            f0_norm = get_f0_norm_fcpe(x.squeeze(1), medians, stds, self.sr, 1024)
+            f0_norm = get_f0_norm_fcpe(x.squeeze(1), medians, stds, self.sr, 1024, norm_mode="none")
         else:
             f0_norm, log_f0_norm = get_f0_norm(x, medians, stds, self.sr, 1024)
 
-        f0_norm = torch.permute(f0_norm, (0, 2, 1))
+        #f0_norm = torch.permute(f0_norm, (0, 2, 1))
+        f0_norm = f0_norm[:, :, 0]
 
         if self.pqmf is not None:
             x_multiband = self.pqmf(x)
@@ -659,11 +654,13 @@ class RAVE(pl.LightningModule):
         emb = emb.repeat(1, 1, z.shape[-1])
         
         #z = self.encoder.reparametrize(z)[0]
-        y = self.decoder(torch.cat((z.detach(), emb, f0_norm), dim=1))
+        y, nsf_source = self.decoder(torch.cat((z.detach(), emb), dim=1), f0_norm)
 
         if self.pqmf is not None:
             x = self.pqmf.inverse(x_multiband)
-            y = self.pqmf.inverse(y)
+            #y = self.pqmf.inverse(y)
+
+        print(x.shape, y.shape)
 
         distance = self.audio_distance(x, y)
 
@@ -690,11 +687,12 @@ class RAVE(pl.LightningModule):
         medians = torch.tensor([self.global_speaker_dict[inp_id]['mean']]).unsqueeze(1).to(x)
         stds = torch.tensor([self.global_speaker_dict[inp_id]['std']]).unsqueeze(1).to(x)
         if self.pitch_estimator == "fcpe":
-            f0_norm = get_f0_norm_fcpe(inp, medians, stds, self.sr, 1024)
+            f0_norm = get_f0_norm_fcpe(inp, medians, stds, self.sr, 1024, norm_mode='none')
         else:
             f0_norm, log_f0_norm = get_f0_norm(inp, medians, stds, self.sr, 1024)
                 
-        f0_norm = torch.permute(f0_norm, (0, 2, 1))
+        #f0_norm = torch.permute(f0_norm, (0, 2, 1))
+        f0_norm = f0_norm[:, :, 0]
 
         if self.pqmf is not None:
             inp_multiband = self.pqmf(inp.unsqueeze(0))
@@ -708,12 +706,13 @@ class RAVE(pl.LightningModule):
 
         tar_emb = tar_emb.repeat(1, 1, z.shape[-1])
 
-        y_conv = self.decoder(torch.cat((z.detach(), tar_emb, f0_norm), dim=1))
+        y_conv, nsf_source_conv = self.decoder(torch.cat((z.detach(), tar_emb), dim=1), f0_norm)
 
         if self.pqmf is not None:
-            outp = self.pqmf.inverse(y_conv)
+            #outp = self.pqmf.inverse(y_conv)
+            outp = y_conv
 
-        return torch.cat([x, y], -1), mean, torch.cat([inp.unsqueeze(0), tar.unsqueeze(0), outp], -1)
+        return torch.cat([x, y, nsf_source], -1), mean, torch.cat([inp.unsqueeze(0), tar.unsqueeze(0), outp], -1)
 
     def validation_epoch_end(self, out):
 

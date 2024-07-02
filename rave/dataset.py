@@ -216,7 +216,7 @@ class LazyAudioDataset(data.Dataset):
                  db_path: str,
                  n_signal: int,
                  sampling_rate: int,
-                 additive_noise: bool = True,
+                 additive_noise: bool,
                  transforms: Optional[transforms.Transform] = None) -> None:
         super().__init__()
         self._db_path = db_path
@@ -325,6 +325,7 @@ def normalize_signal(x: np.ndarray, max_gain_db: int = 30):
 def get_dataset(db_path,
                 sr,
                 n_signal,
+                additive_noise: bool,
                 derivative: bool = False,
                 normalize: bool = False):
     if db_path[:4] == "http":
@@ -354,7 +355,7 @@ def get_dataset(db_path,
     transform_list = transforms.Compose(transform_list)
 
     if lazy:
-        return LazyAudioDataset(db_path, n_signal, sr, transform_list)
+        return LazyAudioDataset(db_path, n_signal, sr, additive_noise, transform_list)
     else:
         return AudioDataset(
             db_path,

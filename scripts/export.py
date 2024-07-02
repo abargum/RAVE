@@ -26,7 +26,7 @@ import rave.model
 import rave.blocks
 import rave.core
 import rave.resampler
-from rave.pitch_utils import get_f0_norm, extract_f0_median_std
+from rave.pitch_utils import get_f0_norm, get_f0_norm_fcpe, extract_f0_median_std_fcpe, extract_f0_median_std, extract_f0_median_std_inference, get_f0_norm_inference
 
 FLAGS = flags.FLAGS
 
@@ -137,7 +137,7 @@ class ScriptedRAVE(nn_tilde.Module):
             #latent_size = max(
             #    np.argmax(pretrained.fidelity.numpy() > fidelity), 1)
             #latent_size = 2**math.ceil(math.log2(latent_size))
-            self.latent_size = 64 + 256 #latent_size
+            self.latent_size = 64 + 256 + 1 #latent_size
 
         elif isinstance(pretrained.encoder, rave.blocks.DiscreteEncoder):
             self.latent_size = 128 #pretrained.encoder.num_quantizers
@@ -344,35 +344,14 @@ class ScriptedRAVE(nn_tilde.Module):
     def myforward(self, x):
 
         x_in = x[:, 0, :]
-        t = x[:, 1, :]
+        pitch = x[:, 1, 0]
 
-        src_f0_median, src_f0_std = extract_f0_median_std(
-            x_in,
-            44100,
-            1024
-        )
-
-        src_f0_median = src_f0_median.unsqueeze(0).repeat(x.shape[0], 1)
-        src_f0_std = src_f0_std.unsqueeze(0).repeat(x.shape[0], 1)
-        
-        f0_norm, log_f0_norm = get_f0_norm(x_in, src_f0_median, src_f0_std, 44100, 1024)
+        medians, stds, _, _ = extract_f0_median_std_inference(x_in, self.sr, 1024)
+        f0_norm = get_f0_norm_inference(x_in, medians, stds, self.sr, 1024, mult=1.0, norm_mode="whitening")
+        f0_norm = f0_norm.unsqueeze(-1) + pitch.unsqueeze(-1).unsqueeze(-1)
         f0_norm = torch.permute(f0_norm, (0, 2, 1))
         
         x_in = x_in.unsqueeze(1)
-
-        """
-        chunk_length = x_in.shape[-1]
-        if self.current_position < self.target_buffer_size:
-            self.buffer[self.current_position:self.current_position + chunk_length] = t[0, :, 0]
-            self.current_position += chunk_length
-        else:
-            self.current_position = 0
-
-        if self.record[0]:
-            #target_pqmf = self.pqmf_speaker(self.buffer.unsqueeze(0).unsqueeze(1))
-            #self.speaker5 = self.speaker_encoder(target_pqmf).unsqueeze(2)
-            self.set_record(False)
-        """
         
         if self.resampler is not None:
             x_in = self.resampler.to_model_sampling_rate(x_in)
@@ -394,7 +373,7 @@ class ScriptedRAVE(nn_tilde.Module):
         z = self.encoder(x_in[: , :6, :])
         emb = self.target_emb.repeat(z.shape[0], 1, z.shape[-1])
 
-        z = torch.cat((z, emb, f0_norm), dim=1)
+        z = torch.cat((z, emb, f0_norm.to(z)), dim=1)
 
         if self.stereo:
             z = torch.cat([z, z], 0)
