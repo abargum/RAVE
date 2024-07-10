@@ -49,12 +49,13 @@ blocks.VariationalEncoder:
     encoder = @variational/blocks.EncoderV2
 
 # GENERATOR
-blocks.GeneratorV2:
+blocks.GeneratorV2Sine:
     data_size = %N_BAND
     capacity = %CAPACITY
     ratios = %RATIOS
     latent_size = @core.get_augmented_latent_size()
     kernel_size = %KERNEL_SIZE
+    sampling_rate = %SAMPLING_RATE
     dilations = %DILATIONS
     amplitude_modulation = True
 
@@ -102,7 +103,7 @@ rave.RAVE:
     speaker_encoder_dir = 'rave/pretrained/model000000075.model'
     speaker_stats_dir = 'rave/pretrained/speaker_stats_fcpe.json'
     num_skipped_features = 1
-    decoder = @blocks.GeneratorV2
+    decoder = @blocks.GeneratorV2Sine
     update_discriminator_every = 4
     weights = {
         'feature_matching': 20,

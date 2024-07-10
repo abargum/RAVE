@@ -157,9 +157,9 @@ class RAVE(pl.LightningModule):
             self.pqmf = pqmf()
 
         self.encoder = encoder()
-        #self.decoder = decoder()
+        self.decoder = decoder()
 
-        self.decoder = GeneratorNSF(320, 1, [3,7,11], [[1,3,5], [1,3,5], [1,3,5]], [8,4,4,4,2], 512, [16,16,4,4,4], 256, 44100)
+        #self.decoder = GeneratorNSF(320, 1, [3,7,11], [[1,3,5], [1,3,5], [1,3,5]], [8,4,4,4,2], 512, [16,16,4,4,4], 256, 44100)
 
         self.speaker_encoder = speaker_encoder()
         spk_state, pqmf_state = self.load_speaker_statedict(speaker_encoder_dir)
@@ -380,8 +380,8 @@ class RAVE(pl.LightningModule):
             # ................... #
 
             x = self.pqmf.inverse(x_multiband)
-            #y = self.pqmf.inverse(y_multiband)
-            y = y_multiband
+            y = self.pqmf.inverse(y_multiband)
+            #y = y_multiband
 
             # .... MY LOSS .... #
             sc_loss, mag_loss = self.stft_criterion(y.squeeze(1), x.squeeze(1))
@@ -589,7 +589,7 @@ class RAVE(pl.LightningModule):
         p.tick('logging')
 
     def encode(self, x):
-
+        """
         medians, stds, _, _ = extract_f0_median_std_fcpe(x.squeeze(1), self.sr, 1024)
         f0_norm = get_f0_norm_fcpe(x.squeeze(1), medians, stds, self.sr, 1024, mult=1.0, norm_mode="whitening")
         f0_norm = torch.permute(f0_norm, (0, 2, 1))
@@ -604,17 +604,38 @@ class RAVE(pl.LightningModule):
         
         z = torch.cat((z, emb, f0_norm.to(z)), dim=1)
         #z, = self.encoder.reparametrize(self.encoder(x))[:1]
-        return z
+        """
 
-    def decode(self, z):
+        medians, stds, _, _ = extract_f0_median_std_fcpe(x.squeeze(1), self.sr, 1024)
+        f0_norm = get_f0_norm_fcpe(x.squeeze(1), medians, stds, self.sr, 1024, mult=1.0, norm_mode="whitening")
+        f0_norm = f0_norm[:, :, 0]
+
+        x_multiband = self.pqmf(x)
+        z = self.encoder(x_multiband[:, :6, :])
+
+        emb = self.speaker_encoder(x_multiband).unsqueeze(2)
+        emb = emb.repeat(1, 1, z.shape[-1])
+
+        z = torch.cat((z, emb), dim=1)
         
+        return z.to(x), f0_norm.to(x)
+
+    def decode(self, z, f0_norm):
+
+        print(z.shape, f0_norm.shape)
+        """
         y = self.decoder(z)
         if self.pqmf is not None and self.enable_pqmf_decode:
             y = self.pqmf.inverse(y)
-        return y
+        return y"""
+        
+        y_multiband, nsf_source = self.decoder(z, f0_norm)
+        return y_multiband
 
     def forward(self, x):
-        return self.decode(self.encode(x))
+        z, f0_norm = self.encode(x)
+        return self.decode(z, f0_norm)
+        #return self.decode(self.encode(x))
 
     def validation_step(self, batch, batch_idx):
         x = batch[0].unsqueeze(1)
@@ -658,7 +679,7 @@ class RAVE(pl.LightningModule):
 
         if self.pqmf is not None:
             x = self.pqmf.inverse(x_multiband)
-            #y = self.pqmf.inverse(y)
+            y = self.pqmf.inverse(y)
 
         print(x.shape, y.shape)
 
@@ -709,8 +730,8 @@ class RAVE(pl.LightningModule):
         y_conv, nsf_source_conv = self.decoder(torch.cat((z.detach(), tar_emb), dim=1), f0_norm)
 
         if self.pqmf is not None:
-            #outp = self.pqmf.inverse(y_conv)
-            outp = y_conv
+            outp = self.pqmf.inverse(y_conv)
+            #outp = y_conv
 
         return torch.cat([x, y, nsf_source], -1), mean, torch.cat([inp.unsqueeze(0), tar.unsqueeze(0), outp], -1)
 
