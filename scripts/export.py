@@ -26,7 +26,7 @@ import rave.model
 import rave.blocks
 import rave.core
 import rave.resampler
-from rave.pitch_utils import get_f0_norm, get_f0_norm_fcpe, extract_f0_median_std_fcpe, extract_f0_median_std, extract_f0_median_std_inference, get_f0_norm_inference
+from rave.pitch_utils import get_f0_norm, get_f0_norm_fcpe, extract_f0_median_std_fcpe, extract_f0_median_std, extract_f0_median_std_inference, get_f0_norm_inference, slice_windows, yin_frame
 
 FLAGS = flags.FLAGS
 
@@ -71,21 +71,24 @@ class ScriptedRAVE(nn_tilde.Module):
 
         #self.pqmf_speaker = pretrained.pqmf
         self.speaker_encoder = pretrained.speaker_encoder
+        
+        #self.speaker_stat_dict = pretrained.global_speaker_dict
+        #self.tar_id = 'p225'
 
         emb_audio, _ = librosa.load("../vctk-small/p225/p225_005_mic1.flac", sr=44100, mono=True)
         emb_audio2, _ = librosa.load("../vctk-small/p226/p226_005_mic1.flac", sr=44100, mono=True)
         emb_audio3, _ = librosa.load("../vctk-small/p227/p227_005_mic1.flac", sr=44100, mono=True)
         emb_audio4, _ = librosa.load("../vctk-small/p228/p228_005_mic1.flac", sr=44100, mono=True)
         
-        emb_audio = torch.tensor(emb_audio[:131072]).unsqueeze(0).unsqueeze(1)
-        emb_audio2 = torch.tensor(emb_audio2[:131072]).unsqueeze(0).unsqueeze(1)
-        emb_audio3 = torch.tensor(emb_audio3[:131072]).unsqueeze(0).unsqueeze(1)
-        emb_audio4 = torch.tensor(emb_audio4[:131072]).unsqueeze(0).unsqueeze(1)
+        self.emb_audio = torch.tensor(emb_audio[:131072]).unsqueeze(0).unsqueeze(1)
+        self.emb_audio2 = torch.tensor(emb_audio2[:131072]).unsqueeze(0).unsqueeze(1)
+        self.emb_audio3 = torch.tensor(emb_audio3[:131072]).unsqueeze(0).unsqueeze(1)
+        self.emb_audio4 = torch.tensor(emb_audio4[:131072]).unsqueeze(0).unsqueeze(1)
         
-        emb_audio_pqmf = self.pqmf(torch.tensor(emb_audio))
-        emb_audio_pqmf2 = self.pqmf(torch.tensor(emb_audio2))
-        emb_audio_pqmf3 = self.pqmf(torch.tensor(emb_audio3))
-        emb_audio_pqmf4 = self.pqmf(torch.tensor(emb_audio4))
+        emb_audio_pqmf = self.pqmf(torch.tensor(self.emb_audio))
+        emb_audio_pqmf2 = self.pqmf(torch.tensor(self.emb_audio2))
+        emb_audio_pqmf3 = self.pqmf(torch.tensor(self.emb_audio3))
+        emb_audio_pqmf4 = self.pqmf(torch.tensor(self.emb_audio4))
         
         self.speaker1 = self.speaker_encoder(emb_audio_pqmf).unsqueeze(2)
         self.speaker2 = self.speaker_encoder(emb_audio_pqmf2).unsqueeze(2)
@@ -94,9 +97,12 @@ class ScriptedRAVE(nn_tilde.Module):
 
         #self.register_attribute("speaker5", torch.zeros(self.speaker4.shape))
         self.speaker5 = torch.ones(self.speaker4.shape)
+        
         self.target_emb = self.speaker1
+        self.target_audio = self.emb_audio
 
         self.sr = pretrained.sr
+        self.prev_f0 = torch.zeros(1)
 
         self.resampler = None
 
@@ -137,7 +143,7 @@ class ScriptedRAVE(nn_tilde.Module):
             #latent_size = max(
             #    np.argmax(pretrained.fidelity.numpy() > fidelity), 1)
             #latent_size = 2**math.ceil(math.log2(latent_size))
-            self.latent_size = 64 + 256 + 1 #latent_size
+            self.latent_size = 64 + 256 #+ 1 #latent_size
 
         elif isinstance(pretrained.encoder, rave.blocks.DiscreteEncoder):
             self.latent_size = 128 #pretrained.encoder.num_quantizers
@@ -343,45 +349,78 @@ class ScriptedRAVE(nn_tilde.Module):
     @torch.jit.export
     def myforward(self, x):
 
-        x_in = x[:, 0, :]
-        pitch = x[:, 1, 0]
-
-        medians, stds, _, _ = extract_f0_median_std_inference(x_in, self.sr, 1024)
-        f0_norm = get_f0_norm_inference(x_in, medians, stds, self.sr, 1024, mult=1.0, norm_mode="whitening")
-        f0_norm = f0_norm.unsqueeze(-1) + pitch.unsqueeze(-1).unsqueeze(-1)
-        f0_norm = torch.permute(f0_norm, (0, 2, 1))
-        
-        x_in = x_in.unsqueeze(1)
-        
-        if self.resampler is not None:
-            x_in = self.resampler.to_model_sampling_rate(x_in)
-
-        if self.pqmf is not None:
-            x_in = self.pqmf(x_in)
-
         if self.speaker[0] == 0:
             self.target_emb = self.speaker1
+            self.target_audio = self.emb_audio
         elif self.speaker[0] == 1:
             self.target_emb = self.speaker2
+            self.target_audio = self.emb_audio2
         elif self.speaker[0] == 2:
             self.target_emb = self.speaker3
+            self.target_audio = self.emb_audio3
         elif self.speaker[0] == 3:
             self.target_emb = self.speaker4
+            self.target_audio = self.emb_audio4
         else:
             self.target_emb = self.speaker5
 
-        z = self.encoder(x_in[: , :6, :])
-        emb = self.target_emb.repeat(z.shape[0], 1, z.shape[-1])
+        x_in = x[:, 0, :]
+        pitch = x[:, 1, 0]
+        
 
-        z = torch.cat((z, emb, f0_norm.to(z)), dim=1)
+        #source_pitch = (torch.ones(source_pitch.shape) * 200) + pitch.unsqueeze(-1)
 
-        if self.stereo:
-            z = torch.cat([z, z], 0)
-            
-        y = self.decoder(z)
+        #shift_amount = 13
+        #shifted_arr = torch.zeros(source_pitch.shape)
+        #shifted_arr[:, shift_amount:] = source_pitch[:, :-shift_amount]
+
+        x_pqmf = x_in.unsqueeze(1)
+        
+        if self.resampler is not None:
+            x_pqmf = self.resampler.to_model_sampling_rate(x_pqmf)
 
         if self.pqmf is not None:
-            y = self.pqmf.inverse(y)
+            x_pqmf = self.pqmf(x_pqmf)
+        
+        z = self.encoder(x_pqmf[: , :6, :])
+        emb = self.target_emb.repeat(z.shape[0], 1, z.shape[-1])
+        z = torch.cat((z, emb), dim=1)
+        
+        if self.stereo:
+            z = torch.cat([z, z], 0)
+
+        """
+        windows = slice_windows(x_in, 1024, 1024, pad=False)
+        f0 = yin_frame(windows, 44100, 50.0, 500.0)
+
+        if f0[0, 0] == 0:
+            # use previous f0 if noisy
+            f0[:, 0] = self.prev_f0
+            # also assume silent if noisy
+            # loudness[:, 0] = 0
+        for i in range(1, f0.shape[1]):
+            if f0[0, i] == 0:
+                f0[:, i] = f0[:, i-1]
+                # loudness[:, i] = 0
+
+        self.prev_f0 = f0[:, -1]
+        """
+
+        mean_in, std_in, _, _ = extract_f0_median_std_inference(x_in, self.sr, 1024)
+        mean_tar, std_tar, _, _ = extract_f0_median_std_inference(self.target_audio.squeeze(1), self.sr, 1024)
+
+        f0_norm = get_f0_norm_inference(x_in, mean_in, std_in, self.sr, 1024, mult=1.0, norm_mode="none")
+        
+        f0_norm[f0_norm == 0] = float('nan')
+        standardized_source_pitch = (f0_norm - mean_in) / std_in
+        source_pitch = (standardized_source_pitch * std_tar + mean_tar)
+        source_pitch = source_pitch + pitch.unsqueeze(-1)
+        source_pitch[torch.isnan(source_pitch)] = 0
+            
+        y_multi, nsf = self.decoder(z, source_pitch.to(z))
+
+        if self.pqmf is not None:
+            y = self.pqmf.inverse(y_multi)
 
         if self.resampler is not None:
             y = self.resampler.from_model_sampling_rate(y)
@@ -389,8 +428,9 @@ class ScriptedRAVE(nn_tilde.Module):
         if self.stereo:
             y = torch.cat(y.chunk(2, 0), 1)
 
-        return y
+        y = y + nsf
 
+        return y
     
     """
     @torch.jit.export

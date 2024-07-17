@@ -17,8 +17,6 @@ import random
 import json
 from .pitch_utils import get_f0_norm, get_f0_norm_fcpe, extract_f0_median_std_fcpe, extract_f0_median_std
 
-from .nsf import GeneratorNSF
-
 import rave.core
 
 from . import blocks
@@ -158,8 +156,6 @@ class RAVE(pl.LightningModule):
 
         self.encoder = encoder()
         self.decoder = decoder()
-
-        #self.decoder = GeneratorNSF(320, 1, [3,7,11], [[1,3,5], [1,3,5], [1,3,5]], [8,4,4,4,2], 512, [16,16,4,4,4], 256, 44100)
 
         self.speaker_encoder = speaker_encoder()
         spk_state, pqmf_state = self.load_speaker_statedict(speaker_encoder_dir)
@@ -621,16 +617,15 @@ class RAVE(pl.LightningModule):
         return z.to(x), f0_norm.to(x)
 
     def decode(self, z, f0_norm):
-
-        print(z.shape, f0_norm.shape)
-        """
-        y = self.decoder(z)
+        
+        
+        #y = self.decoder(z)
+        y, _ = self.decoder(z, f0_norm)
+        
         if self.pqmf is not None and self.enable_pqmf_decode:
             y = self.pqmf.inverse(y)
-        return y"""
         
-        y_multiband, nsf_source = self.decoder(z, f0_norm)
-        return y_multiband
+        return y
 
     def forward(self, x):
         z, f0_norm = self.encode(x)
@@ -680,8 +675,6 @@ class RAVE(pl.LightningModule):
         if self.pqmf is not None:
             x = self.pqmf.inverse(x_multiband)
             y = self.pqmf.inverse(y)
-
-        print(x.shape, y.shape)
 
         distance = self.audio_distance(x, y)
 

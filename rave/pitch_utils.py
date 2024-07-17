@@ -8,8 +8,49 @@ import os
 import argparse
 import torch.nn.functional as F
 from torchfcpe import spawn_bundled_infer_model
+from .pitch.rmvpe import RMVPE
 
 pitch_model = spawn_bundled_infer_model(device="cuda:0")
+#pitch_rmvpe = RMVPE(model_path='/home/jupyter-arbu/RAVE/rave/rmvpe.pt', is_half=False, device='cpu', use_jit=True)
+
+def slice_windows(signal: torch.Tensor, frame_size: int, hop_size: int, window:str='none', pad:bool=True):
+    """
+    slice signal into overlapping frames
+    pads end if (l_x - frame_size) % hop_size != 0
+    Args:
+        signal: [batch, n_samples]
+        frame_size (int): size of frames
+        hop_size (int): size between frames
+    Returns:
+        [batch, n_frames, frame_size]
+    """
+    _batch_dim, l_x = signal.shape
+    remainder = (l_x - frame_size) % hop_size
+    if pad:
+        pad_len = 0 if (remainder == 0) else hop_size - remainder
+        signal = F.pad(signal, (0, pad_len), 'constant')
+    signal = signal[:, None, None, :] # adding dummy channel/height
+    frames = F.unfold(signal, (1, frame_size), stride=(1, hop_size)) #batch, frame_size, n_frames
+    frames = frames.permute(0, 2, 1) # batch, n_frames, frame_size
+    if window == 'hamming':
+        win = torch.hamming_window(frame_size)[None, None, :].to(frames.device)
+        frames = frames * win
+    return frames
+
+def yin_frame(audio_frame, sample_rate:int , pitch_min:float =50, pitch_max:float =2000, threshold:float=0.1):
+    # audio_frame: (n_frames, frame_length)
+    tau_min = int(sample_rate / pitch_max)
+    tau_max = int(sample_rate / pitch_min)
+    assert audio_frame.shape[-1] > tau_max
+    
+    cmdf = _diff(audio_frame, tau_max)[..., tau_min:]
+    tau = _search(cmdf, tau_max, threshold)
+
+    return torch.where(
+            tau > 0,
+            sample_rate / (tau + tau_min + 1).type(audio_frame.dtype),
+            torch.tensor(0).type(audio_frame.dtype),
+        )
 
 # ------ FROM TORCH YIN --------
 def estimate(
@@ -18,7 +59,7 @@ def estimate(
     pitch_min: float = 20.0,
     pitch_max: float = 20000.0,
     frame_stride: float = 0.01,
-    threshold: float = 0.1,
+    threshold:  float = 0.3,
 ) -> torch.Tensor:
 
     signal = torch.as_tensor(signal)
@@ -180,6 +221,9 @@ def extract_f0_median_std_fcpe(wav, fs: int, win_length: int):
 # ------------
 def extract_utterance_inference(y, sr: int, frame_len_samples: int):
     f0 = get_pitch(y, frame_len_samples)
+    
+    #f0 = pitch_rmvpe.compute_f0(y)
+    #print(f0.shape)
     return f0
     
 def get_f0_norm_inference(y, mean, std, fs: int, win_length: int, mult: float = 1.0, norm_mode: str ="whitening"):

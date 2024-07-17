@@ -1,5 +1,5 @@
 from functools import partial
-from typing import Callable, Optional, Sequence, Union
+from typing import Callable, Optional, Sequence, Union, Tuple
 
 import cached_conv as cc
 import gin
@@ -733,6 +733,7 @@ class VariationalEncoder(nn.Module):
         self.warmed_up = state
 
     def forward(self, x: torch.Tensor):
+        
         z = self.encoder(x)
 
         #if self.warmed_up:
@@ -1144,32 +1145,7 @@ class SpeakerRAVE(nn.Module):
         x = self.bn5(x)
         x = self.fc6(x)
 
-        return x
-             
-class SpeakerRAVE_TEST(nn.Module):
-
-    def __init__(self, out_channels=128, activation = lambda dim: nn.LeakyReLU(.2)) -> None:
-        super().__init__()
-
-        out_channels = out_channels
-        #self.pqmf = pqmf
-        
-        self.pqmf = cc.Conv1d(1, out_channels, kernel_size=1, padding=cc.get_padding(1))
-
-        #self.fc6 = nn.Linear(2, 256)
-    
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if len(x.shape) < 3:
-            dummy = self.pqmf(x.unsqueeze(0))
-        else:
-            dummy = self.pqmf(x)
-        return x
-
-
-
-
-
-
+        return x    
 
 class SineGen(torch.nn.Module):
     """Definition of sine generator
@@ -1306,13 +1282,14 @@ class SourceModuleHnNSF(torch.nn.Module):
         )
 
         # to merge source harmonics into a single excitation
-        self.l_linear = torch.nn.Linear(harmonic_num + 1, 1)
+        #self.l_linear = torch.nn.Linear(harmonic_num + 1, 1)
         self.l_tanh = torch.nn.Tanh()
 
     def forward(self, x: torch.Tensor, upp: int = 1):
         sine_wavs, uv, _ = self.l_sin_gen(x, upp)
-        sine_wavs = sine_wavs.to(dtype=self.l_linear.weight.dtype)
-        sine_merge = self.l_tanh(self.l_linear(sine_wavs))
+        #sine_wavs = sine_wavs.to(dtype=self.l_linear.weight.dtype)
+        #sine_merge = self.l_tanh(self.l_linear(sine_wavs))
+        sine_merge = self.l_tanh(sine_wavs)
         return sine_merge, None, None  # noise, uv
 
 class GeneratorV2Sine(nn.Module):
@@ -1423,7 +1400,7 @@ class GeneratorV2Sine(nn.Module):
         self.amplitude_modulation = amplitude_modulation
         self.upp = 1024
 
-    def forward(self, x: torch.Tensor, f0: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, f0: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         
         har_source, noi_source, uv = self.m_source(f0, self.upp)
         har_source = har_source.transpose(1, 2)
