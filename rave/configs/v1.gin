@@ -42,7 +42,7 @@ blocks.normalization.mode = 'weight_norm'
 
 # ENCODER
 blocks.Encoder:
-    data_size = %N_BAND
+    data_size = 6
     capacity = %CAPACITY
     latent_size = %LATENT_SIZE
     ratios = %RATIOS
@@ -56,7 +56,7 @@ blocks.VariationalEncoder:
 
 # DECODER
 blocks.Generator:
-    latent_size = %LATENT_SIZE
+    latent_size = 320
     capacity = %CAPACITY
     data_size = %N_BAND
     ratios = %RATIOS

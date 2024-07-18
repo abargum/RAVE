@@ -43,7 +43,7 @@ flags.DEFINE_string('db_path',
 flags.DEFINE_integer('max_steps',
                      6000000,
                      help='Maximum number of training steps')
-flags.DEFINE_integer('val_every', 10000, help='Checkpoint model every n steps')
+flags.DEFINE_integer('val_every', 200, help='Checkpoint model every n steps')
 flags.DEFINE_integer('n_signal',
                      131072,
                      help='Number of audio samples to use during training')
@@ -143,7 +143,6 @@ def main(argv):
     dataset = rave.dataset.get_dataset(FLAGS.db_path,
                                        model.sr,
                                        FLAGS.n_signal,
-                                       additive_noise=True,
                                        derivative=FLAGS.derivative,
                                        normalize=FLAGS.normalize)
     

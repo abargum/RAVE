@@ -24,6 +24,10 @@ from .my_discriminator import NewDiscriminator
 from .stft_loss import MultiResolutionSTFTLoss
 from .blocks import StackDiscriminators
 from .core import load_speaker_statedict
+import librosa
+
+emb_audio, _ = librosa.load("../vctk-small/p225/p225_005_mic1.flac", sr=44100, mono=True)
+emb_audio = torch.tensor(emb_audio[:131072]).unsqueeze(0).unsqueeze(1)
 
 class Profiler:
 
@@ -109,7 +113,7 @@ class BetaWarmupCallback(pl.Callback):
 class CrossEntropyProjection(nn.Module):
     def __init__(self):
         super().__init__()
-        self.layer_norm = torch.nn.LayerNorm(128)
+        self.layer_norm = torch.nn.LayerNorm(256)
         self.proj = nn.Conv1d(64, 100, 1, bias=False)
         
     def forward(self, x):
@@ -239,6 +243,9 @@ class RAVE(pl.LightningModule):
         with open('/home/jupyter-arbu/RAVE/rave/pretrained/speaker_stats_fcpe.json') as json_file:
             self.global_speaker_dict = json.load(json_file)
 
+        self.emb_audio_pqmf = self.pqmf(emb_audio)
+        self.speaker = self.speaker_encoder(self.emb_audio_pqmf).unsqueeze(2)
+
     def configure_optimizers(self):
         enc_p = list(self.encoder.parameters())
         enc_p += list(self.ce_projection.parameters())
@@ -309,12 +316,14 @@ class RAVE(pl.LightningModule):
         medians = torch.tensor([self.global_speaker_dict[id]['mean'] for id in ids]).unsqueeze(1).to(x)
         stds = torch.tensor([self.global_speaker_dict[id]['std'] for id in ids]).unsqueeze(1).to(x)
 
+        """
         if self.pitch_estimator == "fcpe":
             f0_norm = get_f0_norm_fcpe(x.squeeze(1), medians, stds, self.sr, 1024)
         else:
             f0_norm, log_f0_norm = get_f0_norm(x, medians, stds, self.sr, 1024)
         
         f0_norm = torch.permute(f0_norm, (0, 2, 1))
+        """
 
         if self.pqmf is not None:
             x_multiband = self.pqmf(x)
@@ -347,7 +356,7 @@ class RAVE(pl.LightningModule):
 
         # DECODE LATENT
         y_multiband = self.decoder(
-            torch.cat((z_pre_reg.detach(), emb, f0_norm), dim=1)
+            torch.cat((z_pre_reg.detach(), emb), dim=1)
         )
 
         p.tick('decode')
@@ -583,7 +592,8 @@ class RAVE(pl.LightningModule):
         p.tick('logging')
 
     def encode(self, x):
-        
+
+        """
         src_f0_median, src_f0_std = extract_f0_median_std(
             x[:, 0, :],
             44100,
@@ -595,6 +605,7 @@ class RAVE(pl.LightningModule):
 
         f0_norm, log_f0_norm = get_f0_norm(x[:, 0, :], src_f0_median, src_f0_std, 44100, 1024)
         f0_norm = torch.permute(f0_norm, (0, 2, 1))
+        """
         
         if self.pqmf is not None and self.enable_pqmf_encode:
             x = self.pqmf(x)
@@ -603,10 +614,10 @@ class RAVE(pl.LightningModule):
 
         f0_norm = torch.rand((z.shape[0], 1, z.shape[-1]))
 
-        emb = self.speaker_encoder(x).unsqueeze(-1)
-        emb = emb.repeat(z.shape[0], 1, z.shape[-1])
+        #emb = self.speaker_encoder(x).unsqueeze(-1)
+        emb = self.speaker.repeat(z.shape[0], 1, z.shape[-1])
         
-        z = torch.cat((z, emb, f0_norm), dim=1)
+        z = torch.cat((z, emb), dim=1)
         #z, = self.encoder.reparametrize(self.encoder(x))[:1]
         return z
 
@@ -627,15 +638,17 @@ class RAVE(pl.LightningModule):
         f0_target_length=(x.shape[-1] // 1024)
 
         ids = batch[2]
+        """
         medians = torch.tensor([self.global_speaker_dict[id]['mean'] for id in ids]).unsqueeze(1).to(x)
         stds = torch.tensor([self.global_speaker_dict[id]['std'] for id in ids]).unsqueeze(1).to(x)
-
+        
         if self.pitch_estimator == "fcpe":
             f0_norm = get_f0_norm_fcpe(x.squeeze(1), medians, stds, self.sr, 1024)
         else:
             f0_norm, log_f0_norm = get_f0_norm(x, medians, stds, self.sr, 1024)
 
         f0_norm = torch.permute(f0_norm, (0, 2, 1))
+        """
 
         if self.pqmf is not None:
             x_multiband = self.pqmf(x)
@@ -659,7 +672,7 @@ class RAVE(pl.LightningModule):
         emb = emb.repeat(1, 1, z.shape[-1])
         
         #z = self.encoder.reparametrize(z)[0]
-        y = self.decoder(torch.cat((z.detach(), emb, f0_norm), dim=1))
+        y = self.decoder(torch.cat((z.detach(), emb), dim=1))
 
         if self.pqmf is not None:
             x = self.pqmf.inverse(x_multiband)
@@ -682,11 +695,12 @@ class RAVE(pl.LightningModule):
         else:
             chosen_elements = random.sample(unique_elements, 2)
             inp_ind, tar_ind = [ids.index(element) for element in chosen_elements]
-
+        
         inp = batch[0][inp_ind].unsqueeze(0)
         tar = batch[0][tar_ind].unsqueeze(0)
         inp_id = ids[inp_ind]
-        
+
+        """
         medians = torch.tensor([self.global_speaker_dict[inp_id]['mean']]).unsqueeze(1).to(x)
         stds = torch.tensor([self.global_speaker_dict[inp_id]['std']]).unsqueeze(1).to(x)
         if self.pitch_estimator == "fcpe":
@@ -695,6 +709,7 @@ class RAVE(pl.LightningModule):
             f0_norm, log_f0_norm = get_f0_norm(inp, medians, stds, self.sr, 1024)
                 
         f0_norm = torch.permute(f0_norm, (0, 2, 1))
+        """
 
         if self.pqmf is not None:
             inp_multiband = self.pqmf(inp.unsqueeze(0))
@@ -708,7 +723,7 @@ class RAVE(pl.LightningModule):
 
         tar_emb = tar_emb.repeat(1, 1, z.shape[-1])
 
-        y_conv = self.decoder(torch.cat((z.detach(), tar_emb, f0_norm), dim=1))
+        y_conv = self.decoder(torch.cat((z.detach(), tar_emb), dim=1))
 
         if self.pqmf is not None:
             outp = self.pqmf.inverse(y_conv)

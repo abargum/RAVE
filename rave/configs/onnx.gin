@@ -1,4 +1,6 @@
 from __gin__ import dynamic_registration
+from rave import CombinedRave
+from rave import dataset
 
 include "configs/v1.gin"
 
@@ -8,3 +10,11 @@ from rave import blocks
 CAPACITY = 32
 
 blocks.Generator.use_noise = False
+
+dataset.RandomBackgroundNoise.noise_dir = 'noise_files/'
+
+rave.RAVE:
+    pitch_estimator = 'fcpe'
+    speaker_encoder_dir = 'rave/pretrained/model000000075.model'
+    speaker_stats_dir = 'rave/pretrained/speaker_stats_fcpe.json'
+    speaker_encoder = @CombinedRave.SpeakerRAVE
