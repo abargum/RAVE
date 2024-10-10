@@ -8,10 +8,8 @@ import os
 import argparse
 import torch.nn.functional as F
 from torchfcpe import spawn_bundled_infer_model
-from .pitch.rmvpe import RMVPE
 
 pitch_model = spawn_bundled_infer_model(device="cuda:0")
-#pitch_rmvpe = RMVPE(model_path='/home/jupyter-arbu/RAVE/rave/rmvpe.pt', is_half=False, device='cpu', use_jit=True)
 
 def slice_windows(signal: torch.Tensor, frame_size: int, hop_size: int, window:str='none', pad:bool=True):
     """

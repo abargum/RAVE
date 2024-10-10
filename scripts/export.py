@@ -6,8 +6,7 @@ logging.basicConfig(level=logging.INFO)
 logging.info("library loading")
 logging.info("DEBUG")
 import torch
-
-import librosa
+from absl import flags, app
 
 torch.set_grad_enabled(False)
 
@@ -17,16 +16,12 @@ import nn_tilde
 import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
-from absl import flags, app
+from absl import flags
 
-import sys, os
-sys.path.append(os.path.abspath('../'))
 import rave
-import rave.model
 import rave.blocks
 import rave.core
 import rave.resampler
-from rave.pitch_utils import get_f0_norm, get_f0_norm_fcpe, extract_f0_median_std_fcpe, extract_f0_median_std, extract_f0_median_std_inference, get_f0_norm_inference, slice_windows, yin_frame
 
 FLAGS = flags.FLAGS
 
@@ -68,41 +63,9 @@ class ScriptedRAVE(nn_tilde.Module):
         self.pqmf = pretrained.pqmf
         self.encoder = pretrained.encoder
         self.decoder = pretrained.decoder
-
-        #self.pqmf_speaker = pretrained.pqmf
-        self.speaker_encoder = pretrained.speaker_encoder
-        
-        #self.speaker_stat_dict = pretrained.global_speaker_dict
-        #self.tar_id = 'p225'
-
-        emb_audio, _ = librosa.load("../vctk-small/p225/p225_005_mic1.flac", sr=44100, mono=True)
-        emb_audio2, _ = librosa.load("../vctk-small/p226/p226_005_mic1.flac", sr=44100, mono=True)
-        emb_audio3, _ = librosa.load("../vctk-small/p227/p227_005_mic1.flac", sr=44100, mono=True)
-        emb_audio4, _ = librosa.load("../vctk-small/p228/p228_005_mic1.flac", sr=44100, mono=True)
-        
-        self.emb_audio = torch.tensor(emb_audio[:131072]).unsqueeze(0).unsqueeze(1)
-        self.emb_audio2 = torch.tensor(emb_audio2[:131072]).unsqueeze(0).unsqueeze(1)
-        self.emb_audio3 = torch.tensor(emb_audio3[:131072]).unsqueeze(0).unsqueeze(1)
-        self.emb_audio4 = torch.tensor(emb_audio4[:131072]).unsqueeze(0).unsqueeze(1)
-        
-        emb_audio_pqmf = self.pqmf(torch.tensor(self.emb_audio))
-        emb_audio_pqmf2 = self.pqmf(torch.tensor(self.emb_audio2))
-        emb_audio_pqmf3 = self.pqmf(torch.tensor(self.emb_audio3))
-        emb_audio_pqmf4 = self.pqmf(torch.tensor(self.emb_audio4))
-        
-        self.speaker1 = self.speaker_encoder(emb_audio_pqmf).unsqueeze(2)
-        self.speaker2 = self.speaker_encoder(emb_audio_pqmf2).unsqueeze(2)
-        self.speaker3 = self.speaker_encoder(emb_audio_pqmf3).unsqueeze(2)
-        self.speaker4 = self.speaker_encoder(emb_audio_pqmf4).unsqueeze(2)
-
-        #self.register_attribute("speaker5", torch.zeros(self.speaker4.shape))
-        self.speaker5 = torch.ones(self.speaker4.shape)
-        
-        self.target_emb = self.speaker1
-        self.target_audio = self.emb_audio
+        self.speaker = pretrained.speaker
 
         self.sr = pretrained.sr
-        self.prev_f0 = torch.zeros(1)
 
         self.resampler = None
 
@@ -127,26 +90,19 @@ class ScriptedRAVE(nn_tilde.Module):
         self.register_attribute("reset_target", False)
         self.register_attribute("learn_source", False)
         self.register_attribute("reset_source", False)
-        
-        self.register_attribute("speaker", 0)
-        self.register_attribute("record", False)
 
         self.register_buffer("latent_pca", pretrained.latent_pca)
         self.register_buffer("latent_mean", pretrained.latent_mean)
         self.register_buffer("fidelity", pretrained.fidelity)
 
-        self.target_buffer_size = 131072
-        self.register_buffer("buffer", torch.zeros(self.target_buffer_size))
-        self.current_position = 0
+        self.register_buffer("in_median", None)
+        self.register_buffer("in_std", None)
 
         if isinstance(pretrained.encoder, rave.blocks.VariationalEncoder):
-            #latent_size = max(
-            #    np.argmax(pretrained.fidelity.numpy() > fidelity), 1)
-            #latent_size = 2**math.ceil(math.log2(latent_size))
-            self.latent_size = 64 + 256 #+ 1 #latent_size
+            self.latent_size = 320
 
         elif isinstance(pretrained.encoder, rave.blocks.DiscreteEncoder):
-            self.latent_size = 128 #pretrained.encoder.num_quantizers
+            self.latent_size = pretrained.encoder.num_quantizers
 
         elif isinstance(pretrained.encoder, rave.blocks.WasserteinEncoder):
             self.latent_size = pretrained.latent_size
@@ -177,19 +133,6 @@ class ScriptedRAVE(nn_tilde.Module):
 
         """
         self.register_method(
-            "fill_buffer",
-            in_channels=1,
-            in_ratio=1,
-            out_channels=1,
-            out_ratio=1,
-            input_labels=['(signal) Input audio signal'],
-            output_labels=[
-                f'(signal) Reconstructed audio signal {channel}'
-                for channel in channels
-            ],
-        )
-
-        self.register_method(
             "encode",
             in_channels=1,
             in_ratio=1,
@@ -201,7 +144,6 @@ class ScriptedRAVE(nn_tilde.Module):
                 for i in range(self.latent_size)
             ],
         )
-        
         self.register_method(
             "decode",
             in_channels=self.latent_size,
@@ -217,6 +159,7 @@ class ScriptedRAVE(nn_tilde.Module):
                 for channel in channels
             ],
         )
+        """
 
         self.register_method(
             "forward",
@@ -230,21 +173,7 @@ class ScriptedRAVE(nn_tilde.Module):
                 for channel in channels
             ],
         )
-        """
 
-        self.register_method(
-                "myforward",
-                in_channels=2,
-                in_ratio=1,
-                out_channels=2 if stereo else 1,
-                out_ratio=1,
-                input_labels=['(signal) Input audio signal', '(signal) Input audio signal'],
-                output_labels=[
-                    f'(signal) Reconstructed audio signal {channel}'
-                    for channel in channels
-                ],
-            )
-    
     def post_process_latent(self, z):
         raise NotImplementedError
 
@@ -270,197 +199,176 @@ class ScriptedRAVE(nn_tilde.Module):
         self.reset_source = False,
         self.reset_target = False,
 
-    """
-    @torch.jit.export
-    def fill_buffer(self, x):
-        if self.record[0]:
-            print("enter record")
-            buffer = torch.zeros((x.shape[0], 1, self.target_buffer_size))
-            current_position = 0
-            chunk_length = x.shape[-1]
-            
-            while current_position < self.target_buffer_size:
-                #print(x.shape, buffer[:, :, current_position:current_position + chunk_length].shape)
-                buffer[:, :, current_position:current_position + chunk_length] = x
-                current_position += chunk_length
-    
-            target_pqmf = self.pqmf_speaker(buffer)
-            self.set_speaker5(self.speaker_encoder(target_pqmf).unsqueeze(2))
-            self.set_record = False
+    def slice_windows(self, signal: torch.Tensor, frame_size: int, hop_size: int, window:str='none', pad:bool=True):
+        """
+        slice signal into overlapping frames
+        pads end if (l_x - frame_size) % hop_size != 0
+        Args:
+            signal: [batch, n_samples]
+            frame_size (int): size of frames
+            hop_size (int): size between frames
+        Returns:
+            [batch, n_frames, frame_size]
+        """
+        _batch_dim, l_x = signal.shape
+        remainder = (l_x - frame_size) % hop_size
+        if pad:
+            pad_len = 0 if (remainder == 0) else hop_size - remainder
+            signal = F.pad(signal, (0, pad_len), 'constant')
+        signal = signal[:, None, None, :] # adding dummy channel/height
+        frames = F.unfold(signal, (1, frame_size), stride=(1, hop_size)) #batch, frame_size, n_frames
+        frames = frames.permute(0, 2, 1) # batch, n_frames, frame_size
+        if window == 'hamming':
+            win = torch.hamming_window(frame_size)[None, None, :].to(frames.device)
+            frames = frames * win
+        return frames
 
-        return x
-
-    @torch.jit.export
-    def fill_buffer(self, x):
-        chunk_length = x.shape[-1]
-        if self.current_position < self.target_buffer_size:
-            self.buffer[self.current_position:self.current_position + chunk_length] = x[0, :, 0]
-            self.current_position += chunk_length
-        else:
-            self.current_position = 0
-    """
-            
-    """
-    @torch.jit.export
-    def encode(self, x):
-        if self.is_using_adain:
-            self.update_adain()
+    def yin_frame(self, audio_frame, sample_rate:int, pitch_min:float =50, pitch_max:float =2000, threshold:float=0.1):
+        # audio_frame: (n_frames, frame_length)
+        tau_min = int(sample_rate / pitch_max)
+        tau_max = int(sample_rate / pitch_min)
+        assert audio_frame.shape[-1] > tau_max
         
-        if self.resampler is not None:
-            x = self.resampler.to_model_sampling_rate(x)
+        cmdf = self._diff(audio_frame, tau_max)[..., tau_min:]
+        tau = self._search(cmdf, tau_max, threshold)
+    
+        return torch.where(
+                tau > 0,
+                sample_rate / (tau + tau_min + 1).type(audio_frame.dtype),
+                torch.tensor(0).type(audio_frame.dtype),
+            )
 
-        if self.pqmf is not None:
-            x = self.pqmf(x)
+    def estimate(
+        self,
+        signal,
+        sample_rate: int = 44100,
+        pitch_min: float = 20.0,
+        pitch_max: float = 20000.0,
+        frame_stride: float = 0.01,
+        threshold:  float = 0.3,
+    ) -> torch.Tensor:
+    
+        signal = torch.as_tensor(signal)
+    
+        # convert frequencies to samples, ensure windows can fit 2 whole periods
+        tau_min = int(sample_rate / pitch_max)
+        tau_max = int(sample_rate / pitch_min)
+        frame_length = 2 * tau_max
+        frame_stride = int(frame_stride * sample_rate)
+    
+        # compute the fundamental periods
+        frames = self._frame(signal, frame_length, frame_stride)
+        cmdf = self._diff(frames, tau_max)[..., tau_min:]
+        tau = self._search(cmdf, tau_max, threshold)
+    
+        # convert the periods to frequencies (if periodic) and output
+        return torch.where(
+            tau > 0,
+            sample_rate / (tau + tau_min + 1).type(signal.dtype),
+            torch.tensor(0, device=tau.device).type(signal.dtype),
+        )
+    
+    
+    def _frame(self, signal: torch.Tensor, frame_length: int, frame_stride: int) -> torch.Tensor:
+        # window the signal into overlapping frames, padding to at least 1 frame
+        if signal.shape[-1] < frame_length:
+            signal = torch.nn.functional.pad(signal, [0, frame_length - signal.shape[-1]])
+        return signal.unfold(dimension=-1, size=frame_length, step=frame_stride)
+    
+    
+    def _diff(self, frames: torch.Tensor, tau_max: int) -> torch.Tensor:
+        # frames: n_frames, frame_length
+        # compute the frame-wise autocorrelation using the FFT
+        fft_size = int(2 ** (-int(-math.log(frames.shape[-1]) // math.log(2)) + 1))
+        fft = torch.fft.rfft(frames, fft_size, dim=-1)
+        corr = torch.fft.irfft(fft * fft.conj())[..., :tau_max]
+    
+        # difference function (equation 6)
+        sqrcs = torch.nn.functional.pad((frames * frames).cumsum(-1), [1, 0])
+        corr_0 = sqrcs[..., -1:]
+        corr_tau = sqrcs.flip(-1)[..., :tau_max] - sqrcs[..., :tau_max]
+        diff = corr_0 + corr_tau - 2 * corr
+    
+        #print(diff.device, torch.arange(1, diff.shape[-1]).device)
+    
+        # cumulative mean normalized difference function (equation 8)
+        return (
+            diff[..., 1:]
+            * torch.arange(1, diff.shape[-1], device=diff.device)
+            / torch.clamp(diff[..., 1:].cumsum(-1), min=1e-5)
+        )
+    
+    def _search(self, cmdf: torch.Tensor, tau_max: int, threshold: float) -> torch.Tensor:
+        # mask all periods after the first cmdf below the threshold
+        # if none are below threshold (argmax=0), this is a non-periodic frame
+        first_below = (cmdf < threshold).int().argmax(-1, keepdim=True)
+        first_below = torch.where(first_below > 0, first_below, tau_max)
+        beyond_threshold = torch.arange(cmdf.shape[-1], device=cmdf.device) >= first_below
+    
+        # mask all periods with upward sloping cmdf to find the local minimum
+        increasing_slope = torch.nn.functional.pad(cmdf.diff() >= 0.0, [0, 1], value=1.0)
+    
+        # find the first period satisfying both constraints
+        return (beyond_threshold & increasing_slope).int().argmax(-1)
 
-        dummy_emb = self.speaker_encoder(x)
+    def get_pitch(self, x, block_size: int, fs: int=44100, pitch_min: float=50.0, pitch_max: float=500.0):
+        desired_num_frames = x.shape[-1] / block_size
+        tau_max = int(fs / pitch_min)
+        frame_length = 2 * tau_max
+        frame_stride = (x.shape[-1] - frame_length) / (desired_num_frames - 1) / fs
+        f0 = self.estimate(x, sample_rate=fs, pitch_min=pitch_min, pitch_max=pitch_max, frame_stride=frame_stride)
+        return f0 
 
-        z = self.encoder(x[: ,:6, :])
-        emb = self.speaker1.repeat(z.shape[0], 1, z.shape[-1])
+    def extract_utterance_inference(self, y, sr: int, frame_len_samples: int):
+        f0 = self.get_pitch(y, frame_len_samples)
+        return f0
+
+    def update_in_stats(self, f0_vals):
+        current_median = torch.median(f0_vals)
+        current_std = torch.std(f0_vals)
+
+        if self.in_median is None:
+            self.in_median = current_median
+            self.in_std = current_std
+        else:
+            self.in_median = 0.1 * current_median + (1 - 0.1) * self.in_median
+            self.in_std = 0.1 * current_std + (1 - 0.1) * self.in_std
+
+    def encode(self, x):
+        
+        x = self.pqmf(x)
+        z = self.encoder(x[:, :6, :])
+        emb = self.speaker.repeat(z.shape[0], 1, z.shape[-1])
         z = torch.cat((z, emb), dim=1)
         
         return z
 
-    @torch.jit.export
-    def decode(self, z, from_forward: bool = False):
-        if self.is_using_adain and not from_forward:
-            self.update_adain()
-
-        if self.stereo:
-            z = torch.cat([z, z], 0)
-
-        #z = self.pre_process_latent(z)
-        y = self.decoder(z)
-
-        if self.pqmf is not None:
-            y = self.pqmf.inverse(y)
-
-        if self.resampler is not None:
-            y = self.resampler.from_model_sampling_rate(y)
-
-        if self.stereo:
-            y = torch.cat(y.chunk(2, 0), 1)
-
+    def decode(self, z, f0, from_forward: bool = False):
+        y, harm = self.decoder(z, f0, 512)
+        y = self.pqmf.inverse(y)
         return y
 
     def forward(self, x):
-        return self.decode(self.encode(x), from_forward=True)
-    """
-
-    @torch.jit.export
-    def myforward(self, x):
-
-        if self.speaker[0] == 0:
-            self.target_emb = self.speaker1
-            self.target_audio = self.emb_audio
-        elif self.speaker[0] == 1:
-            self.target_emb = self.speaker2
-            self.target_audio = self.emb_audio2
-        elif self.speaker[0] == 2:
-            self.target_emb = self.speaker3
-            self.target_audio = self.emb_audio3
-        elif self.speaker[0] == 3:
-            self.target_emb = self.speaker4
-            self.target_audio = self.emb_audio4
-        else:
-            self.target_emb = self.speaker5
-
-        x_in = x[:, 0, :]
-        pitch = x[:, 1, 0]
+        z = self.encode(x)
         
+        #f0 = torch.ones(z.shape[0], z.shape[-1]) * 250
 
-        #source_pitch = (torch.ones(source_pitch.shape) * 200) + pitch.unsqueeze(-1)
-
-        #shift_amount = 13
-        #shifted_arr = torch.zeros(source_pitch.shape)
-        #shifted_arr[:, shift_amount:] = source_pitch[:, :-shift_amount]
-
-        x_pqmf = x_in.unsqueeze(1)
+        f0 = self.extract_utterance_inference(x, self.sr, 512).squeeze(1)
+        #f0[f0 == 0] = float('nan')
+        f0 *= 1.7
         
-        if self.resampler is not None:
-            x_pqmf = self.resampler.to_model_sampling_rate(x_pqmf)
+        #f0_vals = f0[~torch.isnan(f0)]
+        #self.update_in_stats(f0_vals)
 
-        if self.pqmf is not None:
-            x_pqmf = self.pqmf(x_pqmf)
+        #print(self.in_median)
+
+        #standardized_source_pitch = f0 - self.in_median / self.in_std
+        #source_pitch = (standardized_source_pitch * 35.76 + 211.82)
+        #source_pitch[torch.isnan(source_pitch)] = 0
         
-        z = self.encoder(x_pqmf[: , :6, :])
-        emb = self.target_emb.repeat(z.shape[0], 1, z.shape[-1])
-        z = torch.cat((z, emb), dim=1)
-        
-        if self.stereo:
-            z = torch.cat([z, z], 0)
-
-        """
-        windows = slice_windows(x_in, 1024, 1024, pad=False)
-        f0 = yin_frame(windows, 44100, 50.0, 500.0)
-
-        if f0[0, 0] == 0:
-            # use previous f0 if noisy
-            f0[:, 0] = self.prev_f0
-            # also assume silent if noisy
-            # loudness[:, 0] = 0
-        for i in range(1, f0.shape[1]):
-            if f0[0, i] == 0:
-                f0[:, i] = f0[:, i-1]
-                # loudness[:, i] = 0
-
-        self.prev_f0 = f0[:, -1]
-        """
-
-        mean_in, std_in, _, _ = extract_f0_median_std_inference(x_in, self.sr, 1024)
-        mean_tar, std_tar, _, _ = extract_f0_median_std_inference(self.target_audio.squeeze(1), self.sr, 1024)
-
-        f0_norm = get_f0_norm_inference(x_in, mean_in, std_in, self.sr, 1024, mult=1.0, norm_mode="none")
-        
-        f0_norm[f0_norm == 0] = float('nan')
-        standardized_source_pitch = (f0_norm - mean_in) / std_in
-        source_pitch = (standardized_source_pitch * std_tar + mean_tar)
-        source_pitch = source_pitch + pitch.unsqueeze(-1)
-        source_pitch[torch.isnan(source_pitch)] = 0
-            
-        y_multi, nsf = self.decoder(z, source_pitch.to(z))
-
-        if self.pqmf is not None:
-            y = self.pqmf.inverse(y_multi)
-
-        if self.resampler is not None:
-            y = self.resampler.from_model_sampling_rate(y)
-
-        if self.stereo:
-            y = torch.cat(y.chunk(2, 0), 1)
-
-        y = y + nsf
-
+        y = self.decode(z, f0)
         return y
-    
-    """
-    @torch.jit.export
-    def get_speaker5(self) -> torch.Tensor:
-        return self.speaker5[0]
 
-    @torch.jit.export
-    def set_speaker5(self, speaker5: torch.Tensor) -> int:
-        self.speaker5 = (speaker5, )
-        return 0
-    """
-    
-    @torch.jit.export
-    def get_record(self) -> bool:
-        return self.record[0]
-
-    @torch.jit.export
-    def set_record(self, record: bool) -> int:
-        self.record = (record, )
-        return 0
-    
-    @torch.jit.export
-    def get_speaker(self) -> int:
-        return self.speaker[0]
-
-    @torch.jit.export
-    def set_speaker(self, speaker: int) -> int:
-        self.speaker = (speaker, )
-        return 0
-        
     @torch.jit.export
     def get_learn_target(self) -> bool:
         return self.learn_target[0]
@@ -559,21 +467,14 @@ class SphericalScriptedRAVE(ScriptedRAVE):
 
 
 def main(argv):
-    cc.use_cached_conv(FLAGS.streaming)
+    cc.use_cached_conv(True)
 
     logging.info("building rave")
 
     gin.parse_config_file(os.path.join(FLAGS.run, "config.gin"))
     checkpoint = rave.core.search_for_run(FLAGS.run)
-    print("loading checkpoint:", checkpoint)
 
     pretrained = rave.RAVE()
-
-    with open("default.txt", "w") as file:
-        for param, val in pretrained.speaker_encoder.state_dict().items():
-            file.write(param + "\n")
-            file.write(str(val) + "\n")
-    
     if checkpoint is not None:
         checkpoint = torch.load(checkpoint, map_location='cpu')
         if FLAGS.ema_weights and "EMA" in checkpoint["callbacks"]:
@@ -590,13 +491,8 @@ def main(argv):
         print("No checkpoint found, RAVE will remain randomly initialized")
     pretrained.eval()
 
-    with open("pretrained.txt", "w") as file:
-        for param, val in pretrained.speaker_encoder.state_dict().items():
-            file.write(param + "\n")
-            file.write(str(val) + "\n")
-
     if isinstance(pretrained.encoder, rave.blocks.VariationalEncoder):
-        script_class = ScriptedRAVE
+        script_class = VariationalScriptedRAVE
     elif isinstance(pretrained.encoder, rave.blocks.DiscreteEncoder):
         script_class = DiscreteScriptedRAVE
     elif isinstance(pretrained.encoder, rave.blocks.WasserteinEncoder):
@@ -618,7 +514,7 @@ def main(argv):
         if hasattr(m, "weight_g"):
             nn.utils.remove_weight_norm(m)
     logging.info("script model")
-
+    
     scripted_rave = script_class(
         pretrained=pretrained,
         stereo=FLAGS.stereo,
@@ -639,5 +535,6 @@ def main(argv):
     logging.info(
         f"all good ! model exported to {os.path.join(FLAGS.run, model_name)}")
 
-if __name__ == "__main__": 
+
+if __name__ == "__main__":
     app.run(main)
