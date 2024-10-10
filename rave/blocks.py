@@ -1300,26 +1300,33 @@ class GeneratorV2Sine(nn.Module):
         dilations_list = normalize_dilations(dilations, ratios)[::-1]
         ratios = ratios[::-1]
 
-        self.m_source = SourceModuleHnNSF(
-            sampling_rate=sampling_rate, harmonic_num=0)
-
         if keep_dim:
             num_channels = np.prod(ratios) * capacity
         else:
             num_channels = 2**len(ratios) * capacity
 
-        upsample_act = []
-        upsample_net = []
-        residual_net = []
-        sine_convs   = []
+        self.m_source = SourceModuleHnNSF(
+            sampling_rate=sampling_rate, harmonic_num=0)
 
-        convs = [512, 256, 64, 16]
+        self.out_list = [2, 6, 11, 16]
+
+        net = []
+        sine_convs = []
+
+        if recurrent_layer is not None:
+            net.append(recurrent_layer(latent_size))
+
+        net.append(
+            normalization(
+                cc.Conv1d(
+                    latent_size,
+                    num_channels,
+                    kernel_size=kernel_size,
+                    padding=cc.get_padding(kernel_size),
+                )))
         
-        self.input_conv = normalization(
-            cc.Conv1d(latent_size,
-                      num_channels,
-                      kernel_size=kernel_size,
-                      padding=cc.get_padding(kernel_size)))
+        iter = 0
+        sine_conv_channels = [512, 256, 64, 16]
 
         for i, (r, dilations) in enumerate(zip(ratios, dilations_list)):
             # ADD UPSAMPLING UNIT
@@ -1327,39 +1334,47 @@ class GeneratorV2Sine(nn.Module):
                 out_channels = num_channels // r
             else:
                 out_channels = num_channels // 2
-            upsample_act.append(activation(num_channels))
-            upsample_net.append(
+            net.append(activation(num_channels))
+            net.append(
                 normalization(
                     cc.ConvTranspose1d(num_channels,
                                        out_channels,
                                        2 * r,
                                        stride=r,
                                        padding=r // 2)))
-
+            
             num_channels = out_channels
-
-            sine_convs.append(cc.Conv1d(1,
+            
+            # IS THE CUMULATIVE DELAY RIGHT?
+            if i == 0:
+                sine_convs.append(cc.Conv1d(1,
                                         num_channels,
-                                        kernel_size=convs[i] * 2,
-                                        stride=convs[i],
-                                        padding=cc.get_padding(convs[i] * 2)))
+                                        kernel_size=sine_conv_channels[iter] * 2,
+                                        stride=sine_conv_channels[iter],
+                                        padding=cc.get_padding(sine_conv_channels[iter] * 2)))
+            else:
+                sine_convs.append(cc.Conv1d(1,
+                                        num_channels,
+                                        kernel_size=sine_conv_channels[iter] * 2,
+                                        stride=sine_conv_channels[iter],
+                                        padding=cc.get_padding(sine_conv_channels[iter] * 2),
+                                        cumulative_delay=sine_convs[-1].cumulative_delay))
+                                    
+            iter += 1
 
-            residual_block = []
             # ADD RESIDUAL DILATED UNITS
             for d in dilations:
                 if adain is not None:
-                    residual_block.append(adain(num_channels))
-                residual_block.append(
+                    net.append(adain(num_channels))
+                net.append(
                     Residual(
                         DilatedUnit(
                             dim=num_channels,
                             kernel_size=kernel_size,
                             dilation=d,
                         )))
-                
-            residual_net.append(cc.CachedSequential(*residual_block))
 
-        self.output_act = activation(num_channels)
+        net.append(activation(num_channels))
 
         waveform_module = normalization(
             cc.Conv1d(
@@ -1376,42 +1391,30 @@ class GeneratorV2Sine(nn.Module):
             self.waveform_module = waveform_module
             self.noise_module = noise_module(out_channels)
         else:
-            self.waveform_module = waveform_module
+            net.append(waveform_module)
 
-        self.upsample_act = cc.CachedSequential(*upsample_act)
-        self.upsample_net = cc.CachedSequential(*upsample_net)
-        self.residual_net = cc.CachedSequential(*residual_net)
-        self.sine_convs   = cc.CachedSequential(*sine_convs)
+        self.net = cc.CachedSequential(*net)
+        self.sine_convs = cc.CachedSequential(*sine_convs)
 
         self.amplitude_modulation = amplitude_modulation
-        self.upp = 1024
 
     def forward(self, x: torch.Tensor, f0: torch.Tensor, upp_factor: int) -> Tuple[torch.Tensor, torch.Tensor]:
         
         har_source, noi_source, uv = self.m_source(f0, upp_factor)
         har_source = har_source.transpose(1, 2)
 
-        x = self.input_conv(x)
+        iter = 0
 
-        for i, (act, upsample, residual_block, sine_conv) in enumerate(zip(self.upsample_act, self.upsample_net, self.residual_net, self.sine_convs)):
-            x = act(x)
-            x = upsample(x)
-
-            x_source = sine_conv(har_source)
-            x = x + x_source
-
-            # Apply each residual unit within the current block
-            for j, residual in enumerate(residual_block):
-                x = residual(x)
-
-        x = self.output_act(x)
+        for i, layer in enumerate(self.net):
+            x = layer(x)
+            if i in self.out_list:
+                x = x + self.sine_convs[iter](har_source)
+                iter += 1
 
         noise = 0.
 
         if self.noise_module is not None:
             noise = self.noise_module(x)
-            x = self.waveform_module(x)
-        else:
             x = self.waveform_module(x)
 
         if self.amplitude_modulation:

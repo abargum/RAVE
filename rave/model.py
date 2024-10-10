@@ -622,8 +622,6 @@ class RAVE(pl.LightningModule):
         if self.pqmf is not None:
             outp = self.pqmf.inverse(y_conv)
 
-        print(inp.shape, nsf_source_conv.shape, outp.shape)
-
         return torch.cat([x, y, nsf_source], -1), mean, torch.cat([inp.unsqueeze(0), tar.unsqueeze(0), outp], -1)
 
     def validation_epoch_end(self, out):
