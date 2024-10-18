@@ -377,8 +377,7 @@ class RAVE(pl.LightningModule):
         if self.pqmf is not None:
 
             # .... RAVE LOSS .... #
-            #multiband_distance = self.multiband_audio_distance(
-            #    x_multiband, y_multiband)
+            multiband_distance = self.multiband_audio_distance(x_multiband, y_multiband) 
             #p.tick('mb distance')
             # ................... #
 
@@ -388,15 +387,15 @@ class RAVE(pl.LightningModule):
 
             # .... MY LOSS .... #
             sc_loss, mag_loss = self.stft_criterion(y.squeeze(1), x.squeeze(1))
-            distance = (sc_loss + mag_loss) * 2.5
-            distances = distance
+            stft_distance = (sc_loss + mag_loss) * 2.5
+            distances['stft'] = stft_distance
             # ................. #
             
             p.tick('recompose')
 
             # .... RAVE LOSS .... #
-            #for k, v in multiband_distance.items():
-            #    distances[f'multiband_{k}'] = v
+            for k, v in multiband_distance.items():
+                distances[f'multiband_{k}'] = v * 0.5
             # ................... #
         else:
             x = x_multiband
@@ -525,10 +524,10 @@ class RAVE(pl.LightningModule):
         loss_gen = {}
 
          # .... RAVE LOSS .... #
-        #loss_gen.update(distances)
+        loss_gen.update(distances)
         
          # .... MY LOSS .... #
-        loss_gen['audio'] = distances
+        #loss_gen['audio'] = distances
         
         p.tick('update loss gen dict')
 
@@ -568,7 +567,7 @@ class RAVE(pl.LightningModule):
         # .... MY LOSS .... #
         
         wandb.log({
-            "stft": distances,
+            #"stft": distances,
             "loss_dis": loss_dis,
             "loss_gen": loss_gen,
             "dis rave": loss_dis,
