@@ -1279,14 +1279,19 @@ class SourceModuleHnNSF(torch.nn.Module):
         return sine_merge, None, None  # noise, uv
 
 
-class AlignUpDownSampling(nn.Module):
+class AddUpDownSampling(nn.Module):
 
-    def __init__(self, *branches, delays=None, cumulative_delay=0, stride=1):
+    def __init__(self, channels, kernel_size, net_delay):
         super().__init__()
-        self.branches = nn.ModuleList(branches)
+        
+        self.ex_conv = cc.Conv1d(1,
+                                 channels,
+                                 kernel_size=kernel_size * 2,
+                                 stride=kernel_size,
+                                 padding=cc.get_padding(kernel_size * 2))
 
-        if delays is None:
-            delays = list(map(lambda x: x.cumulative_delay, self.branches))
+        sine_delay = self.ex_conv.cumulative_delay
+        delays = [net_delay, sine_delay]
 
         max_delay = max(delays)
 
@@ -1295,16 +1300,15 @@ class AlignUpDownSampling(nn.Module):
             for p in map(lambda f: max_delay - f, delays)
         ])
 
-        self.cumulative_delay = int(cumulative_delay * stride) + max_delay
+        self.cumulative_delay = max_delay
 
-    def forward(self, input1, input2):
-        delayed_input1 = self.paddings[0](input1)
-        output1 = self.branches[0](delayed_input1)
+    def forward(self, x, ex):
+        delayed_x = self.paddings[0](x)
 
-        delayed_input2 = self.paddings[1](input2)
-        output2 = self.branches[1](delayed_input2)
+        ex_down = self.ex_conv(ex)
+        delayed_ex = self.paddings[1](ex_down)
 
-        output = output1 + output2
+        output = delayed_x + delayed_ex
         return output
 
 
@@ -1365,16 +1369,7 @@ class GeneratorV2Sine(nn.Module):
         
 
         self.net0 = cc.CachedSequential(*net0)
-        conv_size = sine_conv_channels[0]
-        sine_conv = cc.Conv1d(1,
-                              out_channels,
-                              kernel_size=conv_size * 2,
-                              stride=conv_size,
-                              padding=cc.get_padding(conv_size * 2))
-        
-        branches = [self.net0, sine_conv]
-        self.add_parallel = AlignUpDownSampling(*branches,
-                                                cumulative_delay=self.net0.cumulative_delay)
+        self.add_parallel0 = AddUpDownSampling(out_channels, sine_conv_channels[0], self.net0.cumulative_delay)
         
         net1 = []
         num_channels = out_channels
@@ -1396,16 +1391,7 @@ class GeneratorV2Sine(nn.Module):
                                                      padding=r // 2)))
         
         self.net1 = cc.CachedSequential(*net1)
-        conv_size = sine_conv_channels[1]
-        sine_conv1 = cc.Conv1d(1,
-                              out_channels,
-                              kernel_size=conv_size * 2,
-                              stride=conv_size,
-                              padding=cc.get_padding(conv_size * 2))
-        
-        branches1 = [self.net1, sine_conv1]
-        self.add_parallel1 = AlignUpDownSampling(*branches1,
-                                                cumulative_delay=self.net1.cumulative_delay)
+        self.add_parallel1 = AddUpDownSampling(out_channels, sine_conv_channels[1], self.net1.cumulative_delay)
 
         net2 = []
         num_channels = out_channels
@@ -1427,16 +1413,7 @@ class GeneratorV2Sine(nn.Module):
                                                      padding=r // 2)))
         
         self.net2 = cc.CachedSequential(*net2)
-        conv_size = sine_conv_channels[2]
-        sine_conv2 = cc.Conv1d(1,
-                              out_channels,
-                              kernel_size=conv_size * 2,
-                              stride=conv_size,
-                              padding=cc.get_padding(conv_size * 2))
-        
-        branches2 = [self.net2, sine_conv2]
-        self.add_parallel2 = AlignUpDownSampling(*branches2,
-                                                cumulative_delay=self.net2.cumulative_delay)
+        self.add_parallel2 = AddUpDownSampling(out_channels, sine_conv_channels[2], self.net2.cumulative_delay)
 
         net3 = []
         num_channels = out_channels
@@ -1458,16 +1435,8 @@ class GeneratorV2Sine(nn.Module):
                                                      padding=r // 2)))
         
         self.net3 = cc.CachedSequential(*net3)
-        conv_size = sine_conv_channels[3]
-        sine_conv3 = cc.Conv1d(1,
-                              out_channels,
-                              kernel_size=conv_size * 2,
-                              stride=conv_size,
-                              padding=cc.get_padding(conv_size * 2))
-        
-        branches3 = [self.net3, sine_conv3]
-        self.add_parallel3 = AlignUpDownSampling(*branches3,
-                                                cumulative_delay=self.net3.cumulative_delay)
+        self.add_parallel3 = AddUpDownSampling(out_channels, sine_conv_channels[3], self.net3.cumulative_delay)
+
         
         net4 = []
         num_channels = out_channels
@@ -1502,14 +1471,18 @@ class GeneratorV2Sine(nn.Module):
         self.amplitude_modulation = amplitude_modulation
         self.net4 = cc.CachedSequential(*net4)
 
-    def forward(self, x: torch.Tensor, f0: torch.Tensor, upp_factor: int) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor, f0: torch.Tensor, upp_factor: int = 1024) -> Tuple[torch.Tensor, torch.Tensor]:
 
         har_source, noi_source, uv = self.m_source(f0, upp_factor)
         har_source = har_source.transpose(1, 2)
         
-        x = self.add_parallel(x, har_source)
+        x = self.net0(x)
+        x = self.add_parallel0(x, har_source)
+        x = self.net1(x)
         x = self.add_parallel1(x, har_source)
+        x = self.net2(x)
         x = self.add_parallel2(x, har_source)
+        x = self.net3(x)
         x = self.add_parallel3(x, har_source)
         x = self.net4(x)
 

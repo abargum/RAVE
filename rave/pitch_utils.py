@@ -68,6 +68,8 @@ def estimate(
     frame_length = 2 * tau_max
     frame_stride = int(frame_stride * sample_rate)
 
+    print(frame_length, frame_stride)
+
     # compute the fundamental periods
     frames = _frame(signal, frame_length, frame_stride)
     cmdf = _diff(frames, tau_max)[..., tau_min:]
