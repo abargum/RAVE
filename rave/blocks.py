@@ -1342,114 +1342,57 @@ class GeneratorV2Sine(nn.Module):
         self.m_source = SourceModuleHnNSF(
             sampling_rate=sampling_rate, harmonic_num=0)
 
-        sine_conv_channels = [512, 256, 64, 16]
+        self.conditioning_stages = [2, 6, 11, 16]
 
-        net0 = []
+        sine_conv_kernels = [512, 256, 64, 16]
+        downsampling_channels = []
+
+        net = []
 
         if recurrent_layer is not None:
-            net0.append(recurrent_layer(latent_size))
+            net.append(recurrent_layer(latent_size))
 
-        net0.append(
+        net.append(
             normalization(
                 cc.Conv1d(
                     latent_size,
                     num_channels,
                     kernel_size=kernel_size,
                     padding=cc.get_padding(kernel_size),
-                )))
-        
-        r = ratios[0]
-        out_channels = num_channels // 2
-        net0.append(activation(num_channels))
-        net0.append(normalization(cc.ConvTranspose1d(num_channels,
-                                                     out_channels,
-                                                     2 * r,
-                                                     stride=r,
-                                                     padding=r // 2)))
-        
+                )), )
 
-        self.net0 = cc.CachedSequential(*net0)
-        self.add_parallel0 = AddUpDownSampling(out_channels, sine_conv_channels[0], self.net0.cumulative_delay)
-        
-        net1 = []
-        num_channels = out_channels
-        dilations = dilations_list[0]
-        r = ratios[1]
-        for d in dilations:
-            if adain is not None:
-                net1.append(adain(num_channels))
-            net1.append(Residual(DilatedUnit(dim=num_channels,
-                                             kernel_size=kernel_size,
-                                             dilation=d)))
+        for r, dilations in zip(ratios, dilations_list):
+            # ADD UPSAMPLING UNIT
+            if keep_dim:
+                out_channels = num_channels // r
+            else:
+                out_channels = num_channels // 2
+            net.append(activation(num_channels))
+            net.append(
+                normalization(
+                    cc.ConvTranspose1d(num_channels,
+                                       out_channels,
+                                       2 * r,
+                                       stride=r,
+                                       padding=r // 2)))
             
-        net1.append(activation(num_channels))
-        out_channels = num_channels // 2
-        net1.append(normalization(cc.ConvTranspose1d(num_channels,
-                                                     out_channels,
-                                                     2 * r,
-                                                     stride=r,
-                                                     padding=r // 2)))
-        
-        self.net1 = cc.CachedSequential(*net1)
-        self.add_parallel1 = AddUpDownSampling(out_channels, sine_conv_channels[1], self.net1.cumulative_delay)
+            downsampling_channels.append(out_channels)
 
-        net2 = []
-        num_channels = out_channels
-        dilations = dilations_list[1]
-        r = ratios[2]
-        for d in dilations:
-            if adain is not None:
-                net2.append(adain(num_channels))
-            net2.append(Residual(DilatedUnit(dim=num_channels,
-                                             kernel_size=kernel_size,
-                                             dilation=d)))
-            
-        net2.append(activation(num_channels))
-        out_channels = num_channels // 2
-        net2.append(normalization(cc.ConvTranspose1d(num_channels,
-                                                     out_channels,
-                                                     2 * r,
-                                                     stride=r,
-                                                     padding=r // 2)))
-        
-        self.net2 = cc.CachedSequential(*net2)
-        self.add_parallel2 = AddUpDownSampling(out_channels, sine_conv_channels[2], self.net2.cumulative_delay)
+            num_channels = out_channels
 
-        net3 = []
-        num_channels = out_channels
-        dilations = dilations_list[2]
-        r = ratios[3]
-        for d in dilations:
-            if adain is not None:
-                net3.append(adain(num_channels))
-            net3.append(Residual(DilatedUnit(dim=num_channels,
-                                             kernel_size=kernel_size,
-                                             dilation=d)))
-            
-        net3.append(activation(num_channels))
-        out_channels = num_channels // 2
-        net3.append(normalization(cc.ConvTranspose1d(num_channels,
-                                                     out_channels,
-                                                     2 * r,
-                                                     stride=r,
-                                                     padding=r // 2)))
-        
-        self.net3 = cc.CachedSequential(*net3)
-        self.add_parallel3 = AddUpDownSampling(out_channels, sine_conv_channels[3], self.net3.cumulative_delay)
+            # ADD RESIDUAL DILATED UNITS
+            for d in dilations:
+                if adain is not None:
+                    net.append(adain(num_channels))
+                net.append(
+                    Residual(
+                        DilatedUnit(
+                            dim=num_channels,
+                            kernel_size=kernel_size,
+                            dilation=d,
+                        )))
 
-        
-        net4 = []
-        num_channels = out_channels
-        dilations = dilations_list[3]
-        for d in dilations:
-            if adain is not None:
-                net4.append(adain(num_channels))
-            net4.append(Residual(DilatedUnit(dim=num_channels,
-                                             kernel_size=kernel_size,
-                                             dilation=d)))
-
-
-        net4.append(activation(num_channels))
+        net.append(activation(num_channels))
 
         waveform_module = normalization(
             cc.Conv1d(
@@ -1458,7 +1401,7 @@ class GeneratorV2Sine(nn.Module):
                 kernel_size=kernel_size * 2 + 1,
                 padding=cc.get_padding(kernel_size * 2 + 1),
             ))
-        
+
         self.noise_module = None
         self.waveform_module = None
 
@@ -1466,25 +1409,32 @@ class GeneratorV2Sine(nn.Module):
             self.waveform_module = waveform_module
             self.noise_module = noise_module(out_channels)
         else:
-            net4.append(waveform_module)
+            net.append(waveform_module)
+
+        self.net = cc.CachedSequential(*net)
+
+        self.conditioning_layers = nn.ModuleList()
+        
+        for i, stage in enumerate(self.conditioning_stages):
+            self.conditioning_layers.append(AddUpDownSampling(downsampling_channels[i],
+                                                              sine_conv_kernels[i],
+                                                              self.net[stage].cumulative_delay))
 
         self.amplitude_modulation = amplitude_modulation
-        self.net4 = cc.CachedSequential(*net4)
 
     def forward(self, x: torch.Tensor, f0: torch.Tensor, upp_factor: int = 1024) -> Tuple[torch.Tensor, torch.Tensor]:
 
         har_source, noi_source, uv = self.m_source(f0, upp_factor)
         har_source = har_source.transpose(1, 2)
         
-        x = self.net0(x)
-        x = self.add_parallel0(x, har_source)
-        x = self.net1(x)
-        x = self.add_parallel1(x, har_source)
-        x = self.net2(x)
-        x = self.add_parallel2(x, har_source)
-        x = self.net3(x)
-        x = self.add_parallel3(x, har_source)
-        x = self.net4(x)
+        iterator = 0
+
+        for i, layer in enumerate(self.net):
+            x = layer(x)
+            if i in self.conditioning_stages:
+                ex_down = self.conditioning_layers[iterator](x, har_source)
+                x = x + ex_down
+                iterator += 1
 
         noise = 0.
 
